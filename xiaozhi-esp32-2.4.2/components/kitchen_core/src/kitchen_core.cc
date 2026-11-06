@@ -1,5 +1,6 @@
 #include "kitchen_core.h"
 
+#include <cstdlib>
 #include <cstring>
 
 #include "esp_log.h"
@@ -9,6 +10,10 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "actuator_manager.h"
+#include "key_manager.h"
+#include "sensor_manager.h"
+
 namespace {
 
 constexpr const char *TAG = "KitchenCore";
@@ -16,8 +21,12 @@ constexpr UBaseType_t kMessageQueueLength = 8;
 constexpr uint32_t kSafetyPeriodMs = 100;
 constexpr int kSafetyTaskPriority = 24;
 constexpr int kControlTaskPriority = 22;
+constexpr int kSensorTaskPriority = 20;
+constexpr int kKeyTaskPriority = 21;
 constexpr uint32_t kSafetyTaskStack = 4096;
 constexpr uint32_t kControlTaskStack = 4096;
+constexpr uint32_t kSensorTaskStack = 4096;
+constexpr uint32_t kKeyTaskStack = 3072;
 
 enum class MessageType : uint8_t {
     Command,
@@ -37,6 +46,8 @@ struct Context {
     QueueHandle_t queue = nullptr;
     TaskHandle_t safety_task = nullptr;
     TaskHandle_t control_task = nullptr;
+    TaskHandle_t sensor_task = nullptr;
+    TaskHandle_t key_task = nullptr;
     kitchen_snapshot_t snapshot = {};
     kitchen_event_cb_t event_cb = nullptr;
     void *event_ctx = nullptr;
@@ -76,7 +87,7 @@ void emit_event(kitchen_event_type_t type, kitchen_alarm_level_t level,
 void safety_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "safety task started (skeleton)");
+    ESP_LOGI(TAG, "safety task started");
 
     while (true) {
         if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -148,7 +159,7 @@ void handle_command(const Message &message)
 void control_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "control task started (skeleton)");
+    ESP_LOGI(TAG, "control task started");
 
     Message message = {};
     while (true) {
@@ -169,6 +180,70 @@ void control_task(void *arg)
             emit_event(KITCHEN_EVENT_KEY, KITCHEN_ALARM_NONE, mode,
                        static_cast<int32_t>(message.key), "key");
         }
+    }
+}
+
+void sensor_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "sensor task started");
+
+    TickType_t last_warn = 0;
+    uint32_t last_log_ms = 0;
+    while (true) {
+        if (!sensor_manager_is_ready()) {
+            sensor_manager_init();
+        }
+
+        float temperature_c = 0.0f;
+        float humidity_rh = 0.0f;
+        esp_err_t err = sensor_manager_read(&temperature_c, &humidity_rh);
+
+        if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+            if (err == ESP_OK) {
+                s_ctx.snapshot.temperature_c = temperature_c;
+                s_ctx.snapshot.humidity_rh = humidity_rh;
+                s_ctx.snapshot.valid = true;
+            } else {
+                s_ctx.snapshot.valid = false;
+            }
+            xSemaphoreGive(s_ctx.lock);
+        }
+
+        // LED is a simple visual indicator: on when the last SHT30 read is valid.
+        actuator_manager_set_led(err == ESP_OK);
+
+        if (err == ESP_OK) {
+            const uint32_t now_ms =
+                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            if (last_log_ms == 0 || (now_ms - last_log_ms) >= 5000) {
+                const int temp_x100 = static_cast<int>(temperature_c * 100.0f);
+                const int humi_x100 = static_cast<int>(humidity_rh * 100.0f);
+                ESP_LOGI(TAG, "SHT30 temp=%d.%02dC humi=%d.%02d%%RH",
+                         temp_x100 / 100, std::abs(temp_x100 % 100),
+                         humi_x100 / 100, std::abs(humi_x100 % 100));
+                last_log_ms = now_ms;
+            }
+        } else {
+            TickType_t now = xTaskGetTickCount();
+            if (last_warn == 0 || (now - last_warn) >= pdMS_TO_TICKS(5000)) {
+                ESP_LOGW(TAG, "SHT30 read failed: %s", esp_err_to_name(err));
+                last_warn = now;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+void key_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "key task started");
+
+    while (true) {
+        key_manager_poll();
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -199,7 +274,17 @@ extern "C" esp_err_t kitchen_core_init(void)
     s_ctx.snapshot.valid = false;
     s_ctx.initialized = true;
 
-    ESP_LOGI(TAG, "initialized (skeleton, v%s)", kitchen_core_version());
+    if (sensor_manager_init() != ESP_OK) {
+        ESP_LOGW(TAG, "SHT30 not ready; continuing without sensor");
+    }
+    if (actuator_manager_init() != ESP_OK) {
+        ESP_LOGW(TAG, "status LED init failed; continuing");
+    }
+    if (key_manager_init() != ESP_OK) {
+        ESP_LOGW(TAG, "key init failed; continuing");
+    }
+
+    ESP_LOGI(TAG, "initialized (v%s)", kitchen_core_version());
     return ESP_OK;
 }
 
@@ -230,8 +315,34 @@ extern "C" esp_err_t kitchen_core_start(void)
         return ESP_ERR_NO_MEM;
     }
 
+    ok = xTaskCreatePinnedToCore(
+        sensor_task, "kitchen_sensor", kSensorTaskStack, nullptr,
+        kSensorTaskPriority, &s_ctx.sensor_task, 1);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create sensor task");
+        vTaskDelete(s_ctx.control_task);
+        vTaskDelete(s_ctx.safety_task);
+        s_ctx.control_task = nullptr;
+        s_ctx.safety_task = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
+    ok = xTaskCreatePinnedToCore(
+        key_task, "kitchen_key", kKeyTaskStack, nullptr,
+        kKeyTaskPriority, &s_ctx.key_task, 1);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create key task");
+        vTaskDelete(s_ctx.sensor_task);
+        vTaskDelete(s_ctx.control_task);
+        vTaskDelete(s_ctx.safety_task);
+        s_ctx.sensor_task = nullptr;
+        s_ctx.control_task = nullptr;
+        s_ctx.safety_task = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
     s_ctx.started = true;
-    ESP_LOGI(TAG, "started (skeleton)");
+    ESP_LOGI(TAG, "started");
     return ESP_OK;
 }
 
