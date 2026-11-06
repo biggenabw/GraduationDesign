@@ -143,11 +143,22 @@ void handle_command(const Message &message)
             emit_event(KITCHEN_EVENT_MODE_CHANGED, level, mode, message.value,
                        "mode changed");
             break;
+        case KITCHEN_ACTION_SET_WINDOW:
+            actuator_manager_set_window(static_cast<uint8_t>(message.value));
+            break;
+        case KITCHEN_ACTION_SET_FAN:
+            actuator_manager_set_fan(message.value != 0);
+            break;
+        case KITCHEN_ACTION_MUTE_ALARM:
+            actuator_manager_set_buzzer(false);
+            break;
         case KITCHEN_ACTION_CLOSE_VALVE:
+            actuator_manager_set_valve(false);
             emit_event(KITCHEN_EVENT_VALVE_CHANGED, level, mode,
                        valve_open ? 1 : 0, "valve closed");
             break;
         case KITCHEN_ACTION_RESET_ALARM:
+            actuator_manager_set_buzzer(false);
             emit_event(KITCHEN_EVENT_ALARM_CHANGED, KITCHEN_ALARM_NONE, mode, 0,
                        "alarm reset");
             break;

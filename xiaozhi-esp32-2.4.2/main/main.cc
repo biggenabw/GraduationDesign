@@ -60,6 +60,30 @@ static void KitchenEventLogger(const kitchen_event_t* event, void* user_ctx)
              static_cast<int>(event->mode),
              static_cast<long>(event->value),
              event->message);
+
+    // Selftest-only key mapping: UP/DOWN move the window, OK toggles the fan,
+    // BACK closes the demo valve.
+    if (event->type == KITCHEN_EVENT_KEY) {
+        switch (static_cast<kitchen_key_t>(event->value)) {
+            case KITCHEN_KEY_UP:
+                kitchen_core_request(KITCHEN_ACTION_SET_WINDOW, 100);
+                break;
+            case KITCHEN_KEY_DOWN:
+                kitchen_core_request(KITCHEN_ACTION_SET_WINDOW, 0);
+                break;
+            case KITCHEN_KEY_OK: {
+                static bool fan_on = false;
+                fan_on = !fan_on;
+                kitchen_core_request(KITCHEN_ACTION_SET_FAN, fan_on ? 1 : 0);
+                break;
+            }
+            case KITCHEN_KEY_BACK:
+                kitchen_core_request(KITCHEN_ACTION_CLOSE_VALVE, 0);
+                break;
+            default:
+                break;
+        }
+    }
 }
 
 static void RunKitchenSelfTest(void)
@@ -70,7 +94,6 @@ static void RunKitchenSelfTest(void)
     ESP_ERROR_CHECK(kitchen_core_start());
 
     kitchen_core_request(KITCHEN_ACTION_SET_MODE, 0);
-    kitchen_core_post_key(KITCHEN_KEY_OK, false);
 
     while (true) {
         kitchen_snapshot_t snapshot = {};
