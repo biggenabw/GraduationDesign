@@ -78,14 +78,23 @@ static void RunKitchenSelfTest(void)
         if (err == ESP_OK) {
             char temperature_text[16];
             char humidity_text[16];
+            char ratio2_text[16];
+            char ratio4_text[16];
             FormatX100(temperature_text, sizeof(temperature_text), snapshot.temperature_c);
             FormatX100(humidity_text, sizeof(humidity_text), snapshot.humidity_rh);
+            FormatX100(ratio2_text, sizeof(ratio2_text), snapshot.gas_ratio_mq2);
+            FormatX100(ratio4_text, sizeof(ratio4_text), snapshot.gas_ratio_mq4);
 
             ESP_LOGI(TAG,
-                     "selftest uptime=%lu ms temp=%sC humi=%s%%RH mode=%s alarm=%s fan=%d valve=%d window=%u valid=%d",
+                     "selftest uptime=%lu ms temp=%sC humi=%s%%RH MQ2=%u ratio=%s MQ4=%u ratio=%s gas_valid=%d mode=%s alarm=%s fan=%d valve=%d window=%u valid=%d",
                      static_cast<unsigned long>(snapshot.uptime_ms),
                      temperature_text,
                      humidity_text,
+                     static_cast<unsigned>(snapshot.gas_adc_mq2),
+                     ratio2_text,
+                     static_cast<unsigned>(snapshot.gas_adc_mq4),
+                     ratio4_text,
+                     snapshot.gas_valid,
                      ModeName(snapshot.mode),
                      AlarmName(snapshot.alarm_level),
                      snapshot.fan_on,

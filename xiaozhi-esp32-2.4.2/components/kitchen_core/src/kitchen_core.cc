@@ -189,7 +189,9 @@ void sensor_task(void *arg)
     ESP_LOGI(TAG, "sensor task started");
 
     TickType_t last_warn = 0;
+    TickType_t last_mq_warn = 0;
     uint32_t last_log_ms = 0;
+    uint32_t last_mq_log_ms = 0;
     while (true) {
         if (!sensor_manager_is_ready()) {
             sensor_manager_init();
@@ -199,6 +201,14 @@ void sensor_task(void *arg)
         float humidity_rh = 0.0f;
         esp_err_t err = sensor_manager_read(&temperature_c, &humidity_rh);
 
+        uint16_t adc_mq2 = 0;
+        uint16_t adc_mq4 = 0;
+        float ratio_mq2 = 0.0f;
+        float ratio_mq4 = 0.0f;
+        bool gas_valid = false;
+        esp_err_t mq_err = sensor_manager_read_mq(
+            &adc_mq2, &adc_mq4, &ratio_mq2, &ratio_mq4, &gas_valid);
+
         if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
             if (err == ESP_OK) {
                 s_ctx.snapshot.temperature_c = temperature_c;
@@ -207,15 +217,26 @@ void sensor_task(void *arg)
             } else {
                 s_ctx.snapshot.valid = false;
             }
+
+            if (mq_err == ESP_OK) {
+                s_ctx.snapshot.gas_adc_mq2 = adc_mq2;
+                s_ctx.snapshot.gas_adc_mq4 = adc_mq4;
+                s_ctx.snapshot.gas_ratio_mq2 = ratio_mq2;
+                s_ctx.snapshot.gas_ratio_mq4 = ratio_mq4;
+                s_ctx.snapshot.gas_valid = gas_valid;
+            } else {
+                s_ctx.snapshot.gas_valid = false;
+            }
             xSemaphoreGive(s_ctx.lock);
         }
 
         // LED is a simple visual indicator: on when the last SHT30 read is valid.
         actuator_manager_set_led(err == ESP_OK);
 
+        const uint32_t now_ms =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+
         if (err == ESP_OK) {
-            const uint32_t now_ms =
-                static_cast<uint32_t>(esp_timer_get_time() / 1000);
             if (last_log_ms == 0 || (now_ms - last_log_ms) >= 5000) {
                 const int temp_x100 = static_cast<int>(temperature_c * 100.0f);
                 const int humi_x100 = static_cast<int>(humidity_rh * 100.0f);
@@ -229,6 +250,27 @@ void sensor_task(void *arg)
             if (last_warn == 0 || (now - last_warn) >= pdMS_TO_TICKS(5000)) {
                 ESP_LOGW(TAG, "SHT30 read failed: %s", esp_err_to_name(err));
                 last_warn = now;
+            }
+        }
+
+        if (mq_err == ESP_OK) {
+            if (last_mq_log_ms == 0 || (now_ms - last_mq_log_ms) >= 5000) {
+                const int ratio2_x100 = static_cast<int>(ratio_mq2 * 100.0f);
+                const int ratio4_x100 = static_cast<int>(ratio_mq4 * 100.0f);
+                ESP_LOGI(TAG,
+                         "MQ2 adc=%u ratio=%d.%02d MQ4 adc=%u ratio=%d.%02d gas_valid=%d",
+                         static_cast<unsigned>(adc_mq2),
+                         ratio2_x100 / 100, std::abs(ratio2_x100 % 100),
+                         static_cast<unsigned>(adc_mq4),
+                         ratio4_x100 / 100, std::abs(ratio4_x100 % 100),
+                         gas_valid);
+                last_mq_log_ms = now_ms;
+            }
+        } else {
+            TickType_t now = xTaskGetTickCount();
+            if (last_mq_warn == 0 || (now - last_mq_warn) >= pdMS_TO_TICKS(5000)) {
+                ESP_LOGW(TAG, "MQ read failed: %s", esp_err_to_name(mq_err));
+                last_mq_warn = now;
             }
         }
 

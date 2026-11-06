@@ -7,3 +7,6 @@
 esp_err_t sensor_manager_init(void);
 bool sensor_manager_is_ready(void);
 esp_err_t sensor_manager_read(float* temperature_c, float* humidity_rh);
+esp_err_t sensor_manager_read_mq(uint16_t* adc_mq2, uint16_t* adc_mq4,
+                                 float* ratio_mq2, float* ratio_mq4,
+                                 bool* gas_valid);

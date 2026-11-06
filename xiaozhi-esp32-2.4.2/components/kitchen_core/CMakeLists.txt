@@ -9,6 +9,7 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_REQUIRES
         driver
+        esp_adc
         freertos
         esp_timer
         log

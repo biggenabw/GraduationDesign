@@ -54,8 +54,11 @@ typedef struct {
     float temperature_c;
     float humidity_rh;
     float pot_temperature_c;
+    uint16_t gas_adc_mq2;
+    uint16_t gas_adc_mq4;
     float gas_ratio_mq2;
     float gas_ratio_mq4;
+    bool gas_valid;
     bool human_present;
     bool human_valid;
     bool radar_online;
