@@ -98,9 +98,9 @@ void key_manager_poll(void)
             } else {
                 const int64_t duration_ms = now_ms - state.pressed_ms;
                 const bool long_press = duration_ms >= kLongPressMs;
-                ESP_LOGI(TAG, "key %s %s (%lld ms)", binding.name,
+                ESP_LOGI(TAG, "key %s %s (%d ms)", binding.name,
                          long_press ? "long" : "short",
-                         static_cast<long long>(duration_ms));
+                         static_cast<int>(duration_ms));
                 esp_err_t err = kitchen_core_post_key(binding.key, long_press);
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "post key failed: %s", esp_err_to_name(err));
