@@ -18,7 +18,8 @@ constexpr i2c_port_num_t kSensorI2cPort = I2C_NUM_1;
 constexpr gpio_num_t kSensorSda = GPIO_NUM_8;
 constexpr gpio_num_t kSensorScl = GPIO_NUM_9;
 constexpr uint8_t kSht30Address = 0x44;
-constexpr uint32_t kSht30SpeedHz = 100000;
+constexpr uint8_t kMlxAddress = 0x5A;
+constexpr uint32_t kSensorSpeedHz = 100000;
 
 constexpr adc_channel_t kMq2AdcChannel = ADC_CHANNEL_0;  // GPIO1
 constexpr adc_channel_t kMq4AdcChannel = ADC_CHANNEL_1;  // GPIO2
@@ -29,6 +30,7 @@ constexpr uint32_t kMqBaselineMs = 10000;
 
 i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_sht30 = nullptr;
+i2c_master_dev_handle_t s_mlx = nullptr;
 
 adc_oneshot_unit_handle_t s_adc = nullptr;
 bool s_adc_ready = false;
@@ -84,7 +86,7 @@ bool InitSht30(void)
     i2c_device_config_t dev_config = {};
     dev_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_config.device_address = kSht30Address;
-    dev_config.scl_speed_hz = kSht30SpeedHz;
+    dev_config.scl_speed_hz = kSensorSpeedHz;
 
     esp_err_t err = i2c_master_bus_add_device(s_bus, &dev_config, &s_sht30);
     if (err != ESP_OK) {
@@ -95,6 +97,36 @@ bool InitSht30(void)
 
     ESP_LOGI(TAG, "SHT30 ready on I2C1 (SDA=%d, SCL=%d, addr=0x%02X)",
              kSensorSda, kSensorScl, kSht30Address);
+    return true;
+}
+
+bool InitMlx(void)
+{
+    if (s_mlx != nullptr) {
+        return true;
+    }
+
+    if (s_bus == nullptr) {
+        InitSht30();
+    }
+    if (s_bus == nullptr) {
+        ESP_LOGE(TAG, "MLX init skipped: no sensor I2C bus");
+        return false;
+    }
+
+    i2c_device_config_t dev_config = {};
+    dev_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    dev_config.device_address = kMlxAddress;
+    dev_config.scl_speed_hz = kSensorSpeedHz;
+
+    esp_err_t err = i2c_master_bus_add_device(s_bus, &dev_config, &s_mlx);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "add MLX90614 failed: %s", esp_err_to_name(err));
+        s_mlx = nullptr;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "MLX90614 ready on I2C1 (addr=0x%02X)", kMlxAddress);
     return true;
 }
 
@@ -159,15 +191,19 @@ bool InitMqAdc(void)
 esp_err_t sensor_manager_init(void)
 {
     const bool sht30_ok = InitSht30();
+    const bool mlx_ok = InitMlx();
     const bool adc_ok = InitMqAdc();
 
     if (!sht30_ok) {
         ESP_LOGW(TAG, "SHT30 not available");
     }
+    if (!mlx_ok) {
+        ESP_LOGW(TAG, "MLX90614 not available");
+    }
     if (!adc_ok) {
         ESP_LOGW(TAG, "MQ ADC not available");
     }
-    return (sht30_ok || adc_ok) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    return (sht30_ok || mlx_ok || adc_ok) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 bool sensor_manager_is_ready(void)
@@ -210,6 +246,36 @@ esp_err_t sensor_manager_read(float* temperature_c, float* humidity_rh)
 
     *temperature_c = -45.0f + 175.0f * static_cast<float>(raw_temp) / 65535.0f;
     *humidity_rh = 100.0f * static_cast<float>(raw_humi) / 65535.0f;
+    return ESP_OK;
+}
+
+esp_err_t sensor_manager_read_mlx(float* object_c)
+{
+    if (object_c == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_mlx == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // RAM register 0x07: object temperature, 16-bit little-endian, 0.02 K/LSB.
+    const uint8_t register_address = 0x07;
+    esp_err_t err = i2c_master_transmit(s_mlx, &register_address, 1, 100);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(2));
+
+    uint8_t data[3] = {};
+    err = i2c_master_receive(s_mlx, data, sizeof(data), 100);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const uint16_t raw = static_cast<uint16_t>(data[0]) |
+                         (static_cast<uint16_t>(data[1]) << 8);
+    *object_c = static_cast<float>(raw) * 0.02f - 273.15f;
     return ESP_OK;
 }
 

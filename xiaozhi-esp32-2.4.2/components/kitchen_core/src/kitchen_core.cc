@@ -190,8 +190,10 @@ void sensor_task(void *arg)
 
     TickType_t last_warn = 0;
     TickType_t last_mq_warn = 0;
+    TickType_t last_mlx_warn = 0;
     uint32_t last_log_ms = 0;
     uint32_t last_mq_log_ms = 0;
+    uint32_t last_mlx_log_ms = 0;
     while (true) {
         if (!sensor_manager_is_ready()) {
             sensor_manager_init();
@@ -200,6 +202,9 @@ void sensor_task(void *arg)
         float temperature_c = 0.0f;
         float humidity_rh = 0.0f;
         esp_err_t err = sensor_manager_read(&temperature_c, &humidity_rh);
+
+        float pot_temperature_c = 0.0f;
+        esp_err_t mlx_err = sensor_manager_read_mlx(&pot_temperature_c);
 
         uint16_t adc_mq2 = 0;
         uint16_t adc_mq4 = 0;
@@ -216,6 +221,13 @@ void sensor_task(void *arg)
                 s_ctx.snapshot.valid = true;
             } else {
                 s_ctx.snapshot.valid = false;
+            }
+
+            if (mlx_err == ESP_OK) {
+                s_ctx.snapshot.pot_temperature_c = pot_temperature_c;
+                s_ctx.snapshot.pot_valid = true;
+            } else {
+                s_ctx.snapshot.pot_valid = false;
             }
 
             if (mq_err == ESP_OK) {
@@ -250,6 +262,21 @@ void sensor_task(void *arg)
             if (last_warn == 0 || (now - last_warn) >= pdMS_TO_TICKS(5000)) {
                 ESP_LOGW(TAG, "SHT30 read failed: %s", esp_err_to_name(err));
                 last_warn = now;
+            }
+        }
+
+        if (mlx_err == ESP_OK) {
+            if (last_mlx_log_ms == 0 || (now_ms - last_mlx_log_ms) >= 5000) {
+                const int pot_x100 = static_cast<int>(pot_temperature_c * 100.0f);
+                ESP_LOGI(TAG, "MLX pot=%d.%02dC",
+                         pot_x100 / 100, std::abs(pot_x100 % 100));
+                last_mlx_log_ms = now_ms;
+            }
+        } else {
+            TickType_t now = xTaskGetTickCount();
+            if (last_mlx_warn == 0 || (now - last_mlx_warn) >= pdMS_TO_TICKS(5000)) {
+                ESP_LOGW(TAG, "MLX read failed: %s", esp_err_to_name(mlx_err));
+                last_mlx_warn = now;
             }
         }
 

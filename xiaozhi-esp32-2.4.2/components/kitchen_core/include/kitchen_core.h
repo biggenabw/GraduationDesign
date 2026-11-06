@@ -54,6 +54,7 @@ typedef struct {
     float temperature_c;
     float humidity_rh;
     float pot_temperature_c;
+    bool pot_valid;
     uint16_t gas_adc_mq2;
     uint16_t gas_adc_mq4;
     float gas_ratio_mq2;
