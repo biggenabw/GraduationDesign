@@ -12,6 +12,7 @@
 
 #include "actuator_manager.h"
 #include "key_manager.h"
+#include "radar_manager.h"
 #include "sensor_manager.h"
 
 namespace {
@@ -23,10 +24,13 @@ constexpr int kSafetyTaskPriority = 24;
 constexpr int kControlTaskPriority = 22;
 constexpr int kSensorTaskPriority = 20;
 constexpr int kKeyTaskPriority = 21;
+constexpr int kRadarTaskPriority = 19;
 constexpr uint32_t kSafetyTaskStack = 4096;
 constexpr uint32_t kControlTaskStack = 4096;
 constexpr uint32_t kSensorTaskStack = 4096;
 constexpr uint32_t kKeyTaskStack = 3072;
+constexpr uint32_t kRadarTaskStack = 4096;
+constexpr uint32_t kRadarPeriodMs = 100;
 
 enum class MessageType : uint8_t {
     Command,
@@ -48,6 +52,7 @@ struct Context {
     TaskHandle_t control_task = nullptr;
     TaskHandle_t sensor_task = nullptr;
     TaskHandle_t key_task = nullptr;
+    TaskHandle_t radar_task = nullptr;
     kitchen_snapshot_t snapshot = {};
     kitchen_event_cb_t event_cb = nullptr;
     void *event_ctx = nullptr;
@@ -336,6 +341,29 @@ void key_task(void *arg)
     }
 }
 
+void radar_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "radar task started");
+
+    while (true) {
+        radar_manager_poll();
+
+        radar_manager_data_t data = {};
+        radar_manager_get(&data);
+
+        if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+            s_ctx.snapshot.human_present = data.human_present;
+            s_ctx.snapshot.human_valid = data.human_valid;
+            s_ctx.snapshot.radar_online = data.radar_online;
+            s_ctx.snapshot.human_distance_cm = data.distance_cm;
+            xSemaphoreGive(s_ctx.lock);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(kRadarPeriodMs));
+    }
+}
+
 } // namespace
 
 extern "C" esp_err_t kitchen_core_init(void)
@@ -371,6 +399,9 @@ extern "C" esp_err_t kitchen_core_init(void)
     }
     if (key_manager_init() != ESP_OK) {
         ESP_LOGW(TAG, "key init failed; continuing");
+    }
+    if (radar_manager_init() != ESP_OK) {
+        ESP_LOGW(TAG, "LD2402 init failed; continuing");
     }
 
     ESP_LOGI(TAG, "initialized (v%s)", kitchen_core_version());
@@ -424,6 +455,22 @@ extern "C" esp_err_t kitchen_core_start(void)
         vTaskDelete(s_ctx.sensor_task);
         vTaskDelete(s_ctx.control_task);
         vTaskDelete(s_ctx.safety_task);
+        s_ctx.sensor_task = nullptr;
+        s_ctx.control_task = nullptr;
+        s_ctx.safety_task = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
+    ok = xTaskCreatePinnedToCore(
+        radar_task, "kitchen_radar", kRadarTaskStack, nullptr,
+        kRadarTaskPriority, &s_ctx.radar_task, 1);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create radar task");
+        vTaskDelete(s_ctx.key_task);
+        vTaskDelete(s_ctx.sensor_task);
+        vTaskDelete(s_ctx.control_task);
+        vTaskDelete(s_ctx.safety_task);
+        s_ctx.key_task = nullptr;
         s_ctx.sensor_task = nullptr;
         s_ctx.control_task = nullptr;
         s_ctx.safety_task = nullptr;
