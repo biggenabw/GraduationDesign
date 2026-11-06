@@ -1,0 +1,321 @@
+#include "kitchen_core.h"
+
+#include <cstring>
+
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+namespace {
+
+constexpr const char *TAG = "KitchenCore";
+constexpr UBaseType_t kMessageQueueLength = 8;
+constexpr uint32_t kSafetyPeriodMs = 100;
+constexpr int kSafetyTaskPriority = 24;
+constexpr int kControlTaskPriority = 22;
+constexpr uint32_t kSafetyTaskStack = 4096;
+constexpr uint32_t kControlTaskStack = 4096;
+
+enum class MessageType : uint8_t {
+    Command,
+    Key,
+};
+
+struct Message {
+    MessageType type;
+    kitchen_action_t action;
+    int value;
+    kitchen_key_t key;
+    bool long_press;
+};
+
+struct Context {
+    SemaphoreHandle_t lock = nullptr;
+    QueueHandle_t queue = nullptr;
+    TaskHandle_t safety_task = nullptr;
+    TaskHandle_t control_task = nullptr;
+    kitchen_snapshot_t snapshot = {};
+    kitchen_event_cb_t event_cb = nullptr;
+    void *event_ctx = nullptr;
+    bool initialized = false;
+    bool started = false;
+};
+
+Context s_ctx;
+
+void emit_event(kitchen_event_type_t type, kitchen_alarm_level_t level,
+                kitchen_mode_t mode, int32_t value, const char *message)
+{
+    kitchen_event_cb_t callback = nullptr;
+    void *user_ctx = nullptr;
+
+    if (xSemaphoreTake(s_ctx.lock, portMAX_DELAY) == pdTRUE) {
+        callback = s_ctx.event_cb;
+        user_ctx = s_ctx.event_ctx;
+        xSemaphoreGive(s_ctx.lock);
+    }
+
+    if (callback == nullptr) {
+        return;
+    }
+
+    kitchen_event_t event = {};
+    event.type = type;
+    event.alarm_level = level;
+    event.mode = mode;
+    event.value = value;
+    if (message != nullptr) {
+        std::strncpy(event.message, message, sizeof(event.message) - 1);
+    }
+    callback(&event, user_ctx);
+}
+
+void safety_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "safety task started (skeleton)");
+
+    while (true) {
+        if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+            s_ctx.snapshot.uptime_ms =
+                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            xSemaphoreGive(s_ctx.lock);
+        }
+        vTaskDelay(pdMS_TO_TICKS(kSafetyPeriodMs));
+    }
+}
+
+void handle_command(const Message &message)
+{
+    kitchen_alarm_level_t level = KITCHEN_ALARM_NONE;
+    kitchen_mode_t mode = KITCHEN_MODE_AUTO;
+    bool valve_open = false;
+
+    if (xSemaphoreTake(s_ctx.lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    switch (message.action) {
+        case KITCHEN_ACTION_SET_MODE:
+            s_ctx.snapshot.mode =
+                (message.value == 0) ? KITCHEN_MODE_AUTO : KITCHEN_MODE_MANUAL;
+            break;
+        case KITCHEN_ACTION_SET_WINDOW:
+            s_ctx.snapshot.window_position_pct =
+                static_cast<uint8_t>(message.value);
+            break;
+        case KITCHEN_ACTION_SET_FAN:
+            s_ctx.snapshot.fan_on = (message.value != 0);
+            break;
+        case KITCHEN_ACTION_MUTE_ALARM:
+            break;
+        case KITCHEN_ACTION_CLOSE_VALVE:
+            s_ctx.snapshot.valve_open = false;
+            break;
+        case KITCHEN_ACTION_RESET_ALARM:
+            s_ctx.snapshot.alarm_level = KITCHEN_ALARM_NONE;
+            break;
+        default:
+            break;
+    }
+
+    level = s_ctx.snapshot.alarm_level;
+    mode = s_ctx.snapshot.mode;
+    valve_open = s_ctx.snapshot.valve_open;
+    xSemaphoreGive(s_ctx.lock);
+
+    switch (message.action) {
+        case KITCHEN_ACTION_SET_MODE:
+            emit_event(KITCHEN_EVENT_MODE_CHANGED, level, mode, message.value,
+                       "mode changed");
+            break;
+        case KITCHEN_ACTION_CLOSE_VALVE:
+            emit_event(KITCHEN_EVENT_VALVE_CHANGED, level, mode,
+                       valve_open ? 1 : 0, "valve closed");
+            break;
+        case KITCHEN_ACTION_RESET_ALARM:
+            emit_event(KITCHEN_EVENT_ALARM_CHANGED, KITCHEN_ALARM_NONE, mode, 0,
+                       "alarm reset");
+            break;
+        default:
+            break;
+    }
+}
+
+void control_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "control task started (skeleton)");
+
+    Message message = {};
+    while (true) {
+        if (xQueueReceive(s_ctx.queue, &message, pdMS_TO_TICKS(100)) != pdTRUE) {
+            continue;
+        }
+
+        if (message.type == MessageType::Command) {
+            handle_command(message);
+        } else {
+            kitchen_mode_t mode = KITCHEN_MODE_AUTO;
+            if (xSemaphoreTake(s_ctx.lock, portMAX_DELAY) == pdTRUE) {
+                mode = s_ctx.snapshot.mode;
+                xSemaphoreGive(s_ctx.lock);
+            }
+            ESP_LOGI(TAG, "key %d %s", static_cast<int>(message.key),
+                     message.long_press ? "long" : "short");
+            emit_event(KITCHEN_EVENT_KEY, KITCHEN_ALARM_NONE, mode,
+                       static_cast<int32_t>(message.key), "key");
+        }
+    }
+}
+
+} // namespace
+
+extern "C" esp_err_t kitchen_core_init(void)
+{
+    if (s_ctx.initialized) {
+        return ESP_OK;
+    }
+
+    s_ctx.lock = xSemaphoreCreateMutex();
+    if (s_ctx.lock == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_ctx.queue = xQueueCreate(kMessageQueueLength, sizeof(Message));
+    if (s_ctx.queue == nullptr) {
+        vSemaphoreDelete(s_ctx.lock);
+        s_ctx.lock = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_ctx.snapshot = {};
+    s_ctx.snapshot.mode = KITCHEN_MODE_AUTO;
+    s_ctx.snapshot.alarm_level = KITCHEN_ALARM_NONE;
+    s_ctx.snapshot.safety_index = 100;
+    s_ctx.snapshot.valid = false;
+    s_ctx.initialized = true;
+
+    ESP_LOGI(TAG, "initialized (skeleton, v%s)", kitchen_core_version());
+    return ESP_OK;
+}
+
+extern "C" esp_err_t kitchen_core_start(void)
+{
+    if (!s_ctx.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_ctx.started) {
+        return ESP_OK;
+    }
+
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        safety_task, "kitchen_safety", kSafetyTaskStack, nullptr,
+        kSafetyTaskPriority, &s_ctx.safety_task, 1);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create safety task");
+        return ESP_ERR_NO_MEM;
+    }
+
+    ok = xTaskCreatePinnedToCore(
+        control_task, "kitchen_ctrl", kControlTaskStack, nullptr,
+        kControlTaskPriority, &s_ctx.control_task, 1);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create control task");
+        vTaskDelete(s_ctx.safety_task);
+        s_ctx.safety_task = nullptr;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_ctx.started = true;
+    ESP_LOGI(TAG, "started (skeleton)");
+    return ESP_OK;
+}
+
+extern "C" esp_err_t kitchen_core_get_snapshot(kitchen_snapshot_t *out_snapshot)
+{
+    if (out_snapshot == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_ctx.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_ctx.lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_FAIL;
+    }
+
+    *out_snapshot = s_ctx.snapshot;
+    xSemaphoreGive(s_ctx.lock);
+    return ESP_OK;
+}
+
+extern "C" esp_err_t kitchen_core_request(kitchen_action_t action, int value)
+{
+    if (!s_ctx.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (action < KITCHEN_ACTION_SET_MODE || action > KITCHEN_ACTION_RESET_ALARM) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (action == KITCHEN_ACTION_SET_WINDOW && (value < 0 || value > 100)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((action == KITCHEN_ACTION_SET_MODE || action == KITCHEN_ACTION_SET_FAN) &&
+        value != 0 && value != 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    Message message = {};
+    message.type = MessageType::Command;
+    message.action = action;
+    message.value = value;
+
+    if (xQueueSend(s_ctx.queue, &message, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+extern "C" esp_err_t kitchen_core_post_key(kitchen_key_t key, bool long_press)
+{
+    if (!s_ctx.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (key < KITCHEN_KEY_UP || key > KITCHEN_KEY_BACK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    Message message = {};
+    message.type = MessageType::Key;
+    message.key = key;
+    message.long_press = long_press;
+
+    if (xQueueSend(s_ctx.queue, &message, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+extern "C" void kitchen_core_set_event_callback(kitchen_event_cb_t callback,
+                                                 void *user_ctx)
+{
+    if (s_ctx.lock == nullptr) {
+        s_ctx.event_cb = callback;
+        s_ctx.event_ctx = user_ctx;
+        return;
+    }
+
+    if (xSemaphoreTake(s_ctx.lock, portMAX_DELAY) == pdTRUE) {
+        s_ctx.event_cb = callback;
+        s_ctx.event_ctx = user_ctx;
+        xSemaphoreGive(s_ctx.lock);
+    }
+}
+
+extern "C" const char *kitchen_core_version(void)
+{
+    return "0.1.0-skeleton";
+}

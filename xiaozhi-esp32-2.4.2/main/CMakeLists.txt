@@ -1075,6 +1075,7 @@ idf_component_register(SRCS ${SOURCES}
                         bt
                         fatfs
                         xiaozhi-fonts
+                        kitchen_core
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
