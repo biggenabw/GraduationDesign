@@ -1,3 +1,6 @@
+# Optional kitchen_core self-test firmware (no xiaozhi application)
+option(KITCHEN_SELFTEST "Build kitchen_core self-test firmware" OFF)
+
 # Define source files
 set(SOURCES "audio/audio_codec.cc"
             "audio/audio_debugger.cc"
@@ -1078,6 +1081,10 @@ idf_component_register(SRCS ${SOURCES}
                         kitchen_core
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
+
+if(KITCHEN_SELFTEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_SELFTEST=1)
+endif()
 
 # Use target_compile_definitions to define the reported board identity
 # If BOARD_NAME is empty, use BOARD_TYPE
