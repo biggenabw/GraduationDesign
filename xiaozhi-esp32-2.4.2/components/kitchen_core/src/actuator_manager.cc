@@ -17,8 +17,6 @@ constexpr gpio_num_t kBuzzer = GPIO_NUM_14;
 constexpr ledc_mode_t kLedcMode = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t kServoTimer = LEDC_TIMER_0;
 constexpr ledc_channel_t kServoChannel = LEDC_CHANNEL_0;
-constexpr ledc_timer_t kBuzzerTimer = LEDC_TIMER_1;
-constexpr ledc_channel_t kBuzzerChannel = LEDC_CHANNEL_1;
 
 constexpr uint32_t kServoPeriodUs = 20000;  // 50 Hz
 constexpr uint32_t kServoMinUs = 500;       // 0 %
@@ -77,34 +75,8 @@ esp_err_t InitServo(void)
 
 esp_err_t InitBuzzer(void)
 {
-    ledc_timer_config_t timer = {};
-    timer.speed_mode = kLedcMode;
-    timer.duty_resolution = LEDC_TIMER_10_BIT;
-    timer.timer_num = kBuzzerTimer;
-    timer.freq_hz = 2700;
-    timer.clk_cfg = LEDC_AUTO_CLK;
-
-    esp_err_t err = ledc_timer_config(&timer);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "buzzer timer config failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    ledc_channel_config_t channel = {};
-    channel.gpio_num = kBuzzer;
-    channel.speed_mode = kLedcMode;
-    channel.channel = kBuzzerChannel;
-    channel.intr_type = LEDC_INTR_DISABLE;
-    channel.timer_sel = kBuzzerTimer;
-    channel.duty = 0;
-    channel.hpoint = 0;
-
-    err = ledc_channel_config(&channel);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "buzzer channel config failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    return ESP_OK;
+    // Active-low active buzzer module: high = silent, low = beep.
+    return InitOutput(kBuzzer, 1);
 }
 
 } // namespace
@@ -179,8 +151,7 @@ void actuator_manager_set_valve(bool open)
 
 void actuator_manager_set_buzzer(bool on)
 {
-    const uint32_t duty = on ? 512 : 0;  // 50 % of 10-bit
-    ledc_set_duty(kLedcMode, kBuzzerChannel, duty);
-    ledc_update_duty(kLedcMode, kBuzzerChannel);
+    // Active-low module: low = beep, high = silent.
+    gpio_set_level(kBuzzer, on ? 0 : 1);
     ESP_LOGI(TAG, "buzzer %s", on ? "on" : "off");
 }
