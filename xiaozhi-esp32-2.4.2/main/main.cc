@@ -77,9 +77,12 @@ static void KitchenEventLogger(const kitchen_event_t* event, void* user_ctx)
                 kitchen_core_request(KITCHEN_ACTION_SET_FAN, fan_on ? 1 : 0);
                 break;
             }
-            case KITCHEN_KEY_BACK:
-                kitchen_core_request(KITCHEN_ACTION_CLOSE_VALVE, 0);
+            case KITCHEN_KEY_BACK: {
+                static bool valve_open = false;
+                valve_open = !valve_open;
+                kitchen_core_request(KITCHEN_ACTION_SET_VALVE, valve_open ? 1 : 0);
                 break;
+            }
             default:
                 break;
         }

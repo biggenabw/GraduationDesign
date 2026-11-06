@@ -126,6 +126,9 @@ void handle_command(const Message &message)
         case KITCHEN_ACTION_CLOSE_VALVE:
             s_ctx.snapshot.valve_open = false;
             break;
+        case KITCHEN_ACTION_SET_VALVE:
+            s_ctx.snapshot.valve_open = (message.value != 0);
+            break;
         case KITCHEN_ACTION_RESET_ALARM:
             s_ctx.snapshot.alarm_level = KITCHEN_ALARM_NONE;
             break;
@@ -156,6 +159,12 @@ void handle_command(const Message &message)
             actuator_manager_set_valve(false);
             emit_event(KITCHEN_EVENT_VALVE_CHANGED, level, mode,
                        valve_open ? 1 : 0, "valve closed");
+            break;
+        case KITCHEN_ACTION_SET_VALVE:
+            actuator_manager_set_valve(valve_open);
+            emit_event(KITCHEN_EVENT_VALVE_CHANGED, level, mode,
+                       valve_open ? 1 : 0,
+                       valve_open ? "valve open" : "valve closed");
             break;
         case KITCHEN_ACTION_RESET_ALARM:
             actuator_manager_set_buzzer(false);
@@ -448,13 +457,14 @@ extern "C" esp_err_t kitchen_core_request(kitchen_action_t action, int value)
     if (!s_ctx.initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (action < KITCHEN_ACTION_SET_MODE || action > KITCHEN_ACTION_RESET_ALARM) {
+    if (action < KITCHEN_ACTION_SET_MODE || action > KITCHEN_ACTION_SET_VALVE) {
         return ESP_ERR_INVALID_ARG;
     }
     if (action == KITCHEN_ACTION_SET_WINDOW && (value < 0 || value > 100)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if ((action == KITCHEN_ACTION_SET_MODE || action == KITCHEN_ACTION_SET_FAN) &&
+    if ((action == KITCHEN_ACTION_SET_MODE || action == KITCHEN_ACTION_SET_FAN ||
+         action == KITCHEN_ACTION_SET_VALVE) &&
         value != 0 && value != 1) {
         return ESP_ERR_INVALID_ARG;
     }

@@ -32,6 +32,7 @@ typedef enum {
     KITCHEN_ACTION_MUTE_ALARM = 3,
     KITCHEN_ACTION_CLOSE_VALVE = 4,
     KITCHEN_ACTION_RESET_ALARM = 5,
+    KITCHEN_ACTION_SET_VALVE = 6,
 } kitchen_action_t;
 
 typedef enum {
