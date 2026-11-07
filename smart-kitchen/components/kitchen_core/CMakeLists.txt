@@ -1,5 +1,5 @@
 option(KITCHEN_BUZZER_ACTIVE_HIGH
-       "Buzzer sounds on GPIO14 high; turn OFF for active-low modules" ON)
+       "Buzzer sounds on GPIO14 high; keep OFF for low-level trigger modules" OFF)
 
 idf_component_register(
     SRCS
