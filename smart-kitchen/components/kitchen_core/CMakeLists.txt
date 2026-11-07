@@ -10,6 +10,9 @@ option(KITCHEN_DEMO_ALARM_STAGING
 option(KITCHEN_DEMO_AUTO_CLEAR
        "Demo mode: auto-clear L3 after 10 s below ratio 1.6; turn OFF for real gas" ON)
 
+option(KITCHEN_MQ2_CUT_VALVE
+       "Let MQ2 smoke L3 close the demo valve; keep OFF for cooking smoke" OFF)
+
 idf_component_register(
     SRCS
         "src/kitchen_core.cc"
@@ -42,4 +45,8 @@ endif()
 
 if(KITCHEN_DEMO_AUTO_CLEAR)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_DEMO_AUTO_CLEAR=1)
+endif()
+
+if(KITCHEN_MQ2_CUT_VALVE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_MQ2_CUT_VALVE=1)
 endif()

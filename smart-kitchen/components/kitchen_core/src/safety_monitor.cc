@@ -412,9 +412,14 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
 
     out.window_position_pct = out.active ? 100 : 0;
     out.fan_on = gas_active || stove_active || humidity_active;
+
+    bool gas_valve_cut = s_state.gas4_latched;
+#if defined(KITCHEN_MQ2_CUT_VALVE)
+    gas_valve_cut = gas_valve_cut || s_state.gas2_latched;
+#endif
     out.valve_open =
-        !(s_state.gas2_latched || s_state.gas4_latched ||
-          s_state.stove_valve_cut || s_state.stove_absolute);
+        !(gas_valve_cut || s_state.stove_valve_cut ||
+          s_state.stove_absolute);
     out.buzzer_on = (out.alarm_level >= KITCHEN_ALARM_L2);
     out.status_led_blink_hz =
         out.alarm_level == KITCHEN_ALARM_L3
