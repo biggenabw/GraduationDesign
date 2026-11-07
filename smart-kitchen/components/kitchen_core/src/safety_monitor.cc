@@ -5,26 +5,35 @@
 namespace safety_monitor {
 namespace {
 
-#if defined(KITCHEN_DEMO_ALARM_STAGING)
-// Demo profile: wider L2 band and a 5 s L2 display hold before L3.
+#if defined(KITCHEN_DEMO_AUTO_CLEAR)
+// Demo profile: align L2 with the auto-clear ceiling so outputs stop as soon
+// as the ratio falls below 1.6.
+constexpr float kGasL2Ratio = 1.6f;
+#elif defined(KITCHEN_DEMO_ALARM_STAGING)
 constexpr float kGasL2Ratio = 1.3f;
+#else
+constexpr float kGasL2Ratio = 1.5f;
+#endif
+
+#if defined(KITCHEN_DEMO_ALARM_STAGING)
 constexpr float kGasL3Ratio = 2.5f;
 constexpr uint32_t kGasConfirmMs = 2000;
 constexpr uint32_t kSmokeConfirmMs = 2000;
 constexpr uint32_t kAlarmStageMs = 5000;
 #else
-constexpr float kGasL2Ratio = 1.5f;
 constexpr float kGasL3Ratio = 2.0f;
 constexpr uint32_t kGasConfirmMs = 2000;
 constexpr uint32_t kSmokeConfirmMs = 3000;
 constexpr uint32_t kAlarmStageMs = 0;
 #endif
 
-// Clean-air baseline here sits around 0.76~1.06, and MQ-4 still hovers near
-// 1.0. Use 1.3 as the reset ceiling: well below the L2 warning, but high
-// enough that a clean-air ratio can satisfy the 60 s hold.
+#if defined(KITCHEN_DEMO_AUTO_CLEAR)
+constexpr float kGasResetRatio = 1.6f;
+constexpr uint32_t kGasResetHoldMs = 10000;
+#else
 constexpr float kGasResetRatio = 1.3f;
 constexpr uint32_t kGasResetHoldMs = 60000;
+#endif
 
 constexpr float kHumidityHighRh = 75.0f;
 constexpr float kHumidityLowRh = 65.0f;
@@ -335,6 +344,14 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
         s_state.stove_latched = false;
         s_state.stove_absolute = false;
     }
+
+#if defined(KITCHEN_DEMO_AUTO_CLEAR)
+    // Demo convenience: no BACK press needed once all valid channels have
+    // stayed below the reset ceiling for the hold time.
+    if (s_state.gas_reset_ready) {
+        s_reset_requested = true;
+    }
+#endif
 
     // A reset request only clears latches when the documented conditions hold.
     if (s_reset_requested) {
