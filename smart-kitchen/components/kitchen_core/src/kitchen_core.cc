@@ -552,6 +552,7 @@ extern "C" esp_err_t kitchen_core_init(void)
     s_ctx.snapshot = {};
     s_ctx.snapshot.mode = KITCHEN_MODE_AUTO;
     s_ctx.snapshot.alarm_level = KITCHEN_ALARM_NONE;
+    s_ctx.snapshot.valve_open = actuator_manager_valve_default_open();
     s_ctx.snapshot.safety_index = 100;
     s_ctx.snapshot.valid = false;
     s_ctx.initialized = true;

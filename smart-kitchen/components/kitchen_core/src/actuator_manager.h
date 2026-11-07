@@ -6,6 +6,7 @@
 #include "esp_err.h"
 
 esp_err_t actuator_manager_init(void);
+bool actuator_manager_valve_default_open(void);
 
 void actuator_manager_set_led(bool on);
 void actuator_manager_set_window(uint8_t percent);

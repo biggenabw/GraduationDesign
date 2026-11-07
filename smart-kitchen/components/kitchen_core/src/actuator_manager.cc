@@ -14,6 +14,12 @@ constexpr gpio_num_t kValveRelay = GPIO_NUM_12;
 constexpr gpio_num_t kFanIna = GPIO_NUM_13;
 constexpr gpio_num_t kBuzzer = GPIO_NUM_14;
 
+#if defined(KITCHEN_DEMO_VALVE_DEFAULT_OPEN)
+constexpr bool kValveDefaultOpen = true;
+#else
+constexpr bool kValveDefaultOpen = false;
+#endif
+
 #if defined(KITCHEN_BUZZER_ACTIVE_HIGH)
 constexpr int kBuzzerOnLevel = 1;
 constexpr int kBuzzerOffLevel = 0;
@@ -89,6 +95,11 @@ esp_err_t InitBuzzer(void)
 
 } // namespace
 
+bool actuator_manager_valve_default_open(void)
+{
+    return kValveDefaultOpen;
+}
+
 esp_err_t actuator_manager_init(void)
 {
     esp_err_t err = InitServo();
@@ -100,8 +111,9 @@ esp_err_t actuator_manager_init(void)
         return err;
     }
 
-    // Relay is active-low: high = valve closed (safe default).
-    err = InitOutput(kValveRelay, 1);
+    // Relay is active-low: low = energized/open, high = released/closed.
+    // Demo mode defaults to open; real gas mode defaults to closed.
+    err = InitOutput(kValveRelay, kValveDefaultOpen ? 0 : 1);
     if (err != ESP_OK) {
         return err;
     }
@@ -116,7 +128,7 @@ esp_err_t actuator_manager_init(void)
 
     actuator_manager_set_window(0);
     actuator_manager_set_fan(false);
-    actuator_manager_set_valve(false);
+    actuator_manager_set_valve(kValveDefaultOpen);
     actuator_manager_set_buzzer(false);
 
     ESP_LOGI(TAG, "ready: servo=GPIO%d relay=GPIO%d fan=GPIO%d buzzer=GPIO%d led=GPIO%d",

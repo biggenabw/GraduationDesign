@@ -62,7 +62,7 @@ static void KitchenEventLogger(const kitchen_event_t* event, void* user_ctx)
              event->message);
 
     // Selftest-only key mapping: UP/DOWN move the window, OK toggles the fan,
-    // BACK closes the demo valve.
+    // BACK toggles the demo valve based on the current snapshot.
     if (event->type == KITCHEN_EVENT_KEY) {
         switch (static_cast<kitchen_key_t>(event->value)) {
             case KITCHEN_KEY_UP:
@@ -78,9 +78,11 @@ static void KitchenEventLogger(const kitchen_event_t* event, void* user_ctx)
                 break;
             }
             case KITCHEN_KEY_BACK: {
-                static bool valve_open = false;
-                valve_open = !valve_open;
-                kitchen_core_request(KITCHEN_ACTION_SET_VALVE, valve_open ? 1 : 0);
+                kitchen_snapshot_t snapshot = {};
+                if (kitchen_core_get_snapshot(&snapshot) == ESP_OK) {
+                    kitchen_core_request(KITCHEN_ACTION_SET_VALVE,
+                                         snapshot.valve_open ? 0 : 1);
+                }
                 break;
             }
             default:

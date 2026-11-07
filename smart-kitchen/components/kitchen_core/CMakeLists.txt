@@ -1,6 +1,9 @@
 option(KITCHEN_BUZZER_ACTIVE_HIGH
        "Buzzer sounds on GPIO14 high; keep OFF for low-level trigger modules" OFF)
 
+option(KITCHEN_DEMO_VALVE_DEFAULT_OPEN
+       "Demo mode: energize relay and open valve at boot; turn OFF for real gas" ON)
+
 idf_component_register(
     SRCS
         "src/kitchen_core.cc"
@@ -21,4 +24,8 @@ idf_component_register(
 
 if(KITCHEN_BUZZER_ACTIVE_HIGH)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_BUZZER_ACTIVE_HIGH=1)
+endif()
+
+if(KITCHEN_DEMO_VALVE_DEFAULT_OPEN)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_DEMO_VALVE_DEFAULT_OPEN=1)
 endif()
