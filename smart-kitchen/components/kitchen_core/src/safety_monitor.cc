@@ -7,7 +7,10 @@ namespace {
 
 constexpr float kGasL2Ratio = 1.5f;
 constexpr float kGasL3Ratio = 2.0f;
-constexpr float kGasResetRatio = 0.6f;
+// Clean-air baseline here sits around 0.76~1.06, and MQ-4 still hovers near
+// 1.0. Use 1.3 as the reset ceiling: well below the 1.5 L2 warning, but high
+// enough that a clean-air ratio can satisfy the 60 s hold.
+constexpr float kGasResetRatio = 1.3f;
 constexpr uint32_t kGasConfirmMs = 2000;
 constexpr uint32_t kGasResetHoldMs = 60000;
 
