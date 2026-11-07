@@ -166,7 +166,8 @@ void safety_task(void *arg)
             last_apply_ms = now_ms;
         }
         const bool drive_outputs = decision.active || last_decision.active ||
-                                   decision.alarm_level >= KITCHEN_ALARM_L3;
+                                   decision.alarm_level >= KITCHEN_ALARM_L3 ||
+                                   decision.fan_on != last_decision.fan_on;
 
         if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
             s_ctx.snapshot.alarm_level = decision.alarm_level;

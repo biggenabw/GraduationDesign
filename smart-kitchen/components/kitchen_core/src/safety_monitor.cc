@@ -38,8 +38,16 @@ constexpr uint32_t kGasResetHoldMs = 60000;
 constexpr float kHumidityHighRh = 75.0f;
 constexpr float kHumidityLowRh = 65.0f;
 constexpr float kHumidityRateMaxRhPerSec = 15.0f;
+#if defined(KITCHEN_DEMO_FAST_HUMIDITY)
+constexpr uint32_t kHumidityHoldMs = 5000;
+#else
 constexpr uint32_t kHumidityHoldMs = 30000;
+#endif
 constexpr uint32_t kHumiditySuspectMs = 30000;
+
+// High temperature only drives the fan; it does not open the window.
+constexpr float kFanHighTempC = 35.0f;
+constexpr float kFanLowTempC = 33.0f;
 
 constexpr float kPotOnC = 60.0f;
 constexpr float kPotOffC = 50.0f;
@@ -69,6 +77,8 @@ struct State {
     uint32_t humidity_suspect_until_ms = 0;
     float last_humidity_rh = 0.0f;
     uint32_t last_humidity_ms = 0;
+
+    bool high_temp_fan_active = false;
 
     bool stove_latched = false;
     bool stove_valve_cut = false;
@@ -301,6 +311,18 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
         s_state.humidity_low_since_ms = 0;
     }
 
+    // High temperature is a fan-only condition; humidity alone never starts
+    // the fan. 33 C release prevents chatter around the 35 C threshold.
+    if (in.sht30_valid) {
+        if (in.temperature_c >= kFanHighTempC) {
+            s_state.high_temp_fan_active = true;
+        } else if (in.temperature_c <= kFanLowTempC) {
+            s_state.high_temp_fan_active = false;
+        }
+    } else {
+        s_state.high_temp_fan_active = false;
+    }
+
     // Stove: MLX90614 is optional; when absent this logic stays idle.
     const bool pot_on = in.pot_valid && in.pot_temperature_c >= kPotOnC;
     out.stove_on = pot_on;
@@ -419,7 +441,10 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
     }
 
     out.window_position_pct = out.active ? 100 : 0;
-    out.fan_on = gas_active || stove_active || humidity_active;
+    // Humidity opens the window but does not start the fan. The fan runs for
+    // gas/stove safety or when the kitchen temperature is above 35 C.
+    out.fan_on = gas_active || stove_active ||
+                 s_state.high_temp_fan_active;
 
     bool gas_valve_cut = s_state.gas4_latched;
 #if defined(KITCHEN_MQ2_CUT_VALVE)

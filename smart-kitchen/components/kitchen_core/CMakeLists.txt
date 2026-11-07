@@ -16,6 +16,9 @@ option(KITCHEN_MQ2_CUT_VALVE
 option(KITCHEN_MQ2_HUMAN_GATING
        "MQ2 smoke L3 only when the radar confirms nobody; human present stays L2" ON)
 
+option(KITCHEN_DEMO_FAST_HUMIDITY
+       "Demo mode: use 5 s humidity hold instead of 30 s" ON)
+
 idf_component_register(
     SRCS
         "src/kitchen_core.cc"
@@ -56,4 +59,8 @@ endif()
 
 if(KITCHEN_MQ2_HUMAN_GATING)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_MQ2_HUMAN_GATING=1)
+endif()
+
+if(KITCHEN_DEMO_FAST_HUMIDITY)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_DEMO_FAST_HUMIDITY=1)
 endif()
