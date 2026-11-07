@@ -13,6 +13,9 @@ option(KITCHEN_DEMO_AUTO_CLEAR
 option(KITCHEN_MQ2_CUT_VALVE
        "Let MQ2 smoke L3 close the demo valve; keep OFF for cooking smoke" OFF)
 
+option(KITCHEN_MQ2_HUMAN_GATING
+       "MQ2 smoke L3 only when the radar confirms nobody; human present stays L2" ON)
+
 idf_component_register(
     SRCS
         "src/kitchen_core.cc"
@@ -49,4 +52,8 @@ endif()
 
 if(KITCHEN_MQ2_CUT_VALVE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_MQ2_CUT_VALVE=1)
+endif()
+
+if(KITCHEN_MQ2_HUMAN_GATING)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_MQ2_HUMAN_GATING=1)
 endif()

@@ -166,7 +166,15 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
     // - MQ2: smoke/broad-spectrum gas, 3 s confirmation, never downgraded by
     //   human presence (smoke is dangerous whether someone is there or not).
     const bool mq2_l2_condition = in.gas2_valid && ratio2 >= kGasL2Ratio;
-    const bool mq2_l3_condition = in.gas2_valid && ratio2 >= kGasL3Ratio;
+#if defined(KITCHEN_MQ2_HUMAN_GATING)
+    // Cooking smoke with a confirmed person present stays at L2. Only an
+    // explicitly absent person allows MQ2 smoke to escalate to L3.
+    const bool mq2_l3_human_ok = !human_present_fail_safe;
+#else
+    const bool mq2_l3_human_ok = true;
+#endif
+    const bool mq2_l3_condition =
+        in.gas2_valid && ratio2 >= kGasL3Ratio && mq2_l3_human_ok;
     const bool mq4_l2_condition = in.gas4_valid && ratio4 >= kGasL2Ratio;
     const bool mq4_l3_condition = in.gas4_valid && ratio4 >= kGasL3Ratio;
 
