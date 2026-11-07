@@ -129,7 +129,7 @@ static void RunKitchenSelfTest(void)
             FormatX100(ratio4_text, sizeof(ratio4_text), snapshot.gas_ratio_mq4);
 
             ESP_LOGI(TAG,
-                     "selftest uptime=%lu ms temp=%sC humi=%s%%RH pot=%sC pot_valid=%d MQ2=%u ratio=%s MQ4=%u ratio=%s gas_valid=%d human=%d human_valid=%d radar_online=%d dist=%u mode=%s alarm=%s flags=%u index=%u stove=%d fan=%d valve=%d window=%u valid=%d",
+                     "selftest uptime=%lu ms temp=%sC humi=%s%%RH pot=%sC pot_valid=%d MQ2=%u ratio=%s MQ4=%u ratio=%s gas_valid=%d gas2_valid=%d gas4_valid=%d human=%d human_valid=%d radar_online=%d dist=%u mode=%s alarm=%s flags=%u index=%u stove=%d fan=%d valve=%d window=%u valid=%d",
                      static_cast<unsigned long>(snapshot.uptime_ms),
                      temperature_text,
                      humidity_text,
@@ -140,6 +140,8 @@ static void RunKitchenSelfTest(void)
                      static_cast<unsigned>(snapshot.gas_adc_mq4),
                      ratio4_text,
                      snapshot.gas_valid,
+                     snapshot.gas2_valid,
+                     snapshot.gas4_valid,
                      snapshot.human_present,
                      snapshot.human_valid,
                      snapshot.radar_online,

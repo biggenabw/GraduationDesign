@@ -144,7 +144,8 @@ void safety_task(void *arg)
         input.sht30_valid = snapshot.valid;
         input.temperature_c = snapshot.temperature_c;
         input.humidity_rh = snapshot.humidity_rh;
-        input.gas_valid = snapshot.gas_valid;
+        input.gas2_valid = snapshot.gas2_valid;
+        input.gas4_valid = snapshot.gas4_valid;
         input.gas_ratio_mq2 = snapshot.gas_ratio_mq2;
         input.gas_ratio_mq4 = snapshot.gas_ratio_mq4;
         input.human_present = snapshot.human_present;
@@ -401,8 +402,11 @@ void sensor_task(void *arg)
         float ratio_mq2 = 0.0f;
         float ratio_mq4 = 0.0f;
         bool gas_valid = false;
+        bool gas2_valid = false;
+        bool gas4_valid = false;
         esp_err_t mq_err = sensor_manager_read_mq(
-            &adc_mq2, &adc_mq4, &ratio_mq2, &ratio_mq4, &gas_valid);
+            &adc_mq2, &adc_mq4, &ratio_mq2, &ratio_mq4, &gas_valid,
+            &gas2_valid, &gas4_valid);
 
         if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
             if (err == ESP_OK) {
@@ -426,8 +430,12 @@ void sensor_task(void *arg)
                 s_ctx.snapshot.gas_ratio_mq2 = ratio_mq2;
                 s_ctx.snapshot.gas_ratio_mq4 = ratio_mq4;
                 s_ctx.snapshot.gas_valid = gas_valid;
+                s_ctx.snapshot.gas2_valid = gas2_valid;
+                s_ctx.snapshot.gas4_valid = gas4_valid;
             } else {
                 s_ctx.snapshot.gas_valid = false;
+                s_ctx.snapshot.gas2_valid = false;
+                s_ctx.snapshot.gas4_valid = false;
             }
             xSemaphoreGive(s_ctx.lock);
         }
@@ -475,12 +483,13 @@ void sensor_task(void *arg)
                 const int ratio2_x100 = static_cast<int>(ratio_mq2 * 100.0f);
                 const int ratio4_x100 = static_cast<int>(ratio_mq4 * 100.0f);
                 ESP_LOGI(TAG,
-                         "MQ2 adc=%u ratio=%d.%02d MQ4 adc=%u ratio=%d.%02d gas_valid=%d",
+                         "MQ2 adc=%u ratio=%d.%02d valid=%d MQ4 adc=%u ratio=%d.%02d valid=%d gas_valid=%d",
                          static_cast<unsigned>(adc_mq2),
                          ratio2_x100 / 100, std::abs(ratio2_x100 % 100),
+                         gas2_valid,
                          static_cast<unsigned>(adc_mq4),
                          ratio4_x100 / 100, std::abs(ratio4_x100 % 100),
-                         gas_valid);
+                         gas4_valid, gas_valid);
                 last_mq_log_ms = now_ms;
             }
         } else {

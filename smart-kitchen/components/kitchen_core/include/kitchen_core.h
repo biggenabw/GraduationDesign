@@ -61,6 +61,8 @@ typedef struct {
     float gas_ratio_mq2;
     float gas_ratio_mq4;
     bool gas_valid;
+    bool gas2_valid;
+    bool gas4_valid;
     bool human_present;
     bool human_valid;
     bool radar_online;

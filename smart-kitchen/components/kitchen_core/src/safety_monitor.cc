@@ -5,13 +5,25 @@
 namespace safety_monitor {
 namespace {
 
+#if defined(KITCHEN_DEMO_ALARM_STAGING)
+// Demo profile: wider L2 band and a 5 s L2 display hold before L3.
+constexpr float kGasL2Ratio = 1.3f;
+constexpr float kGasL3Ratio = 2.5f;
+constexpr uint32_t kGasConfirmMs = 2000;
+constexpr uint32_t kSmokeConfirmMs = 2000;
+constexpr uint32_t kAlarmStageMs = 5000;
+#else
 constexpr float kGasL2Ratio = 1.5f;
 constexpr float kGasL3Ratio = 2.0f;
+constexpr uint32_t kGasConfirmMs = 2000;
+constexpr uint32_t kSmokeConfirmMs = 3000;
+constexpr uint32_t kAlarmStageMs = 0;
+#endif
+
 // Clean-air baseline here sits around 0.76~1.06, and MQ-4 still hovers near
-// 1.0. Use 1.3 as the reset ceiling: well below the 1.5 L2 warning, but high
+// 1.0. Use 1.3 as the reset ceiling: well below the L2 warning, but high
 // enough that a clean-air ratio can satisfy the 60 s hold.
 constexpr float kGasResetRatio = 1.3f;
-constexpr uint32_t kGasConfirmMs = 2000;
 constexpr uint32_t kGasResetHoldMs = 60000;
 
 constexpr float kHumidityHighRh = 75.0f;
@@ -31,10 +43,14 @@ constexpr uint32_t kPotOffHoldMs = 30000;
 struct State {
     bool initialized = false;
 
-    bool gas_latched = false;
-    bool gas_l2_active = false;
-    uint32_t gas_l2_since_ms = 0;
-    uint32_t gas_l3_since_ms = 0;
+    bool gas2_latched = false;
+    bool gas4_latched = false;
+    bool gas2_l2_active = false;
+    bool gas4_l2_active = false;
+    uint32_t gas2_l2_since_ms = 0;
+    uint32_t gas4_l2_since_ms = 0;
+    uint32_t gas2_l3_since_ms = 0;
+    uint32_t gas4_l3_since_ms = 0;
     uint32_t gas_reset_since_ms = 0;
     bool gas_reset_ready = false;
 
@@ -132,37 +148,83 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
         flags |= kAlarmFlagFault;
     }
 
-    const float max_gas_ratio =
-        in.gas_valid ? MaxFloat(in.gas_ratio_mq2, in.gas_ratio_mq4) : 0.0f;
+    const float ratio2 = in.gas2_valid ? in.gas_ratio_mq2 : 0.0f;
+    const float ratio4 = in.gas4_valid ? in.gas_ratio_mq4 : 0.0f;
+    const float max_gas_ratio = MaxFloat(ratio2, ratio4);
 
-    // Gas: L2 after 2 s, L3 after 2 s and latched until explicit reset.
-    const bool gas_l3_condition =
-        in.gas_valid &&
-        (in.gas_ratio_mq4 >= kGasL3Ratio ||
-         (in.gas_ratio_mq2 >= kGasL3Ratio && !human_present_fail_safe));
-    const bool gas_l2_condition =
-        in.gas_valid && max_gas_ratio >= kGasL2Ratio;
+    // Gas channels are independent:
+    // - MQ4: methane/combustible gas, 2 s confirmation
+    // - MQ2: smoke/broad-spectrum gas, 3 s confirmation, never downgraded by
+    //   human presence (smoke is dangerous whether someone is there or not).
+    const bool mq2_l2_condition = in.gas2_valid && ratio2 >= kGasL2Ratio;
+    const bool mq2_l3_condition = in.gas2_valid && ratio2 >= kGasL3Ratio;
+    const bool mq4_l2_condition = in.gas4_valid && ratio4 >= kGasL2Ratio;
+    const bool mq4_l3_condition = in.gas4_valid && ratio4 >= kGasL3Ratio;
 
-    if (gas_l3_condition) {
-        MarkSince(s_state.gas_l3_since_ms, in.now_ms);
-        if (ElapsedSince(s_state.gas_l3_since_ms, in.now_ms) >= kGasConfirmMs) {
-            s_state.gas_latched = true;
+    if (mq2_l2_condition) {
+        MarkSince(s_state.gas2_l2_since_ms, in.now_ms);
+        s_state.gas2_l2_active =
+            ElapsedSince(s_state.gas2_l2_since_ms, in.now_ms) >=
+            kSmokeConfirmMs;
+    } else {
+        s_state.gas2_l2_since_ms = 0;
+        s_state.gas2_l2_active = false;
+    }
+
+    if (mq4_l2_condition) {
+        MarkSince(s_state.gas4_l2_since_ms, in.now_ms);
+        s_state.gas4_l2_active =
+            ElapsedSince(s_state.gas4_l2_since_ms, in.now_ms) >=
+            kGasConfirmMs;
+    } else {
+        s_state.gas4_l2_since_ms = 0;
+        s_state.gas4_l2_active = false;
+    }
+
+#if defined(KITCHEN_DEMO_ALARM_STAGING)
+    const bool gas2_stage_ready =
+        s_state.gas2_l2_since_ms != 0 &&
+        ElapsedSince(s_state.gas2_l2_since_ms, in.now_ms) >=
+            (kSmokeConfirmMs + kAlarmStageMs);
+    const bool gas4_stage_ready =
+        s_state.gas4_l2_since_ms != 0 &&
+        ElapsedSince(s_state.gas4_l2_since_ms, in.now_ms) >=
+            (kGasConfirmMs + kAlarmStageMs);
+#else
+    const bool gas2_stage_ready = true;
+    const bool gas4_stage_ready = true;
+#endif
+
+    if (mq2_l3_condition) {
+        MarkSince(s_state.gas2_l3_since_ms, in.now_ms);
+        if (gas2_stage_ready &&
+            ElapsedSince(s_state.gas2_l3_since_ms, in.now_ms) >=
+                kSmokeConfirmMs) {
+            s_state.gas2_latched = true;
         }
     } else {
-        s_state.gas_l3_since_ms = 0;
+        s_state.gas2_l3_since_ms = 0;
     }
 
-    if (gas_l2_condition) {
-        MarkSince(s_state.gas_l2_since_ms, in.now_ms);
-        s_state.gas_l2_active =
-            ElapsedSince(s_state.gas_l2_since_ms, in.now_ms) >= kGasConfirmMs;
+    if (mq4_l3_condition) {
+        MarkSince(s_state.gas4_l3_since_ms, in.now_ms);
+        if (gas4_stage_ready &&
+            ElapsedSince(s_state.gas4_l3_since_ms, in.now_ms) >=
+                kGasConfirmMs) {
+            s_state.gas4_latched = true;
+        }
     } else {
-        s_state.gas_l2_since_ms = 0;
-        s_state.gas_l2_active = false;
+        s_state.gas4_l3_since_ms = 0;
     }
 
-    if (s_state.gas_latched) {
-        if (in.gas_valid && max_gas_ratio < kGasResetRatio) {
+    const bool gas_latched = s_state.gas2_latched || s_state.gas4_latched;
+    if (gas_latched) {
+        const bool gas_any_valid = in.gas2_valid || in.gas4_valid;
+        const bool gas_all_valid_low =
+            (!in.gas2_valid || in.gas_ratio_mq2 < kGasResetRatio) &&
+            (!in.gas4_valid || in.gas_ratio_mq4 < kGasResetRatio);
+
+        if (gas_any_valid && gas_all_valid_low) {
             MarkSince(s_state.gas_reset_since_ms, in.now_ms);
             if (ElapsedSince(s_state.gas_reset_since_ms, in.now_ms) >=
                 kGasResetHoldMs) {
@@ -276,9 +338,16 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
 
     // A reset request only clears latches when the documented conditions hold.
     if (s_reset_requested) {
-        if (s_state.gas_latched && s_state.gas_reset_ready) {
-            s_state.gas_latched = false;
-            s_state.gas_l2_active = false;
+        if ((s_state.gas2_latched || s_state.gas4_latched) &&
+            s_state.gas_reset_ready) {
+            s_state.gas2_latched = false;
+            s_state.gas4_latched = false;
+            s_state.gas2_l2_active = false;
+            s_state.gas4_l2_active = false;
+            s_state.gas2_l2_since_ms = 0;
+            s_state.gas4_l2_since_ms = 0;
+            s_state.gas2_l3_since_ms = 0;
+            s_state.gas4_l3_since_ms = 0;
             s_state.gas_reset_ready = false;
             s_state.gas_reset_since_ms = 0;
         }
@@ -290,14 +359,21 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
         s_reset_requested = false;
     }
 
-    const bool gas_active = s_state.gas_latched || s_state.gas_l2_active;
+    const bool gas2_active =
+        s_state.gas2_latched || s_state.gas2_l2_active;
+    const bool gas4_active =
+        s_state.gas4_latched || s_state.gas4_l2_active;
+    const bool gas_active = gas2_active || gas4_active;
     const bool stove_active =
         s_state.stove_latched || s_state.stove_absolute ||
         s_state.stove_valve_cut;
     const bool humidity_active = s_state.humidity_window_active;
 
-    if (gas_active) {
+    if (gas4_active) {
         flags |= kAlarmFlagGas;
+    }
+    if (gas2_active) {
+        flags |= kAlarmFlagSmoke;
     }
     if (stove_active) {
         flags |= kAlarmFlagStove;
@@ -309,18 +385,19 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
     out.active = gas_active || stove_active || humidity_active;
     out.alarm_flags = flags;
     out.alarm_level = KITCHEN_ALARM_NONE;
-    if (s_state.gas_latched || s_state.stove_latched ||
-        s_state.stove_absolute || s_state.stove_valve_cut) {
+    if (s_state.gas2_latched || s_state.gas4_latched ||
+        s_state.stove_latched || s_state.stove_absolute ||
+        s_state.stove_valve_cut) {
         out.alarm_level = KITCHEN_ALARM_L3;
-    } else if (s_state.gas_l2_active) {
+    } else if (s_state.gas2_l2_active || s_state.gas4_l2_active) {
         out.alarm_level = KITCHEN_ALARM_L2;
     }
 
     out.window_position_pct = out.active ? 100 : 0;
     out.fan_on = gas_active || stove_active || humidity_active;
     out.valve_open =
-        !(s_state.gas_latched || s_state.stove_valve_cut ||
-          s_state.stove_absolute);
+        !(s_state.gas2_latched || s_state.gas4_latched ||
+          s_state.stove_valve_cut || s_state.stove_absolute);
     out.buzzer_on = (out.alarm_level >= KITCHEN_ALARM_L2);
     out.status_led_blink_hz =
         out.alarm_level == KITCHEN_ALARM_L3
@@ -329,7 +406,7 @@ void evaluate(const SafetyInput* input, SafetyDecision* decision)
 
     // Safety index: 100 is best, penalties lower it.
     float gas_pen = 0.0f;
-    if (in.gas_valid) {
+    if (in.gas2_valid || in.gas4_valid) {
         gas_pen = 50.0f * Clamp((max_gas_ratio - 1.0f) /
                                     (kGasL3Ratio - 1.0f),
                                 0.0f, 1.0f);

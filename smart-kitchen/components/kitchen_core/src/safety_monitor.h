@@ -6,17 +6,19 @@
 
 namespace safety_monitor {
 
-constexpr uint16_t kAlarmFlagGas = 1U << 0;
+constexpr uint16_t kAlarmFlagGas = 1U << 0;    // MQ4 methane/combustible gas
 constexpr uint16_t kAlarmFlagStove = 1U << 1;
 constexpr uint16_t kAlarmFlagHumidity = 1U << 2;
 constexpr uint16_t kAlarmFlagFault = 1U << 3;
+constexpr uint16_t kAlarmFlagSmoke = 1U << 4;  // MQ2 smoke/broad-spectrum
 
 struct SafetyInput {
     uint32_t now_ms;
     bool sht30_valid;
     float temperature_c;
     float humidity_rh;
-    bool gas_valid;
+    bool gas2_valid;
+    bool gas4_valid;
     float gas_ratio_mq2;
     float gas_ratio_mq4;
     bool human_present;
