@@ -1,5 +1,6 @@
 #include "sensor_manager.h"
 
+#include <algorithm>
 #include <cstdint>
 
 #include "driver/gpio.h"
@@ -24,9 +25,14 @@ constexpr uint32_t kSensorSpeedHz = 100000;
 constexpr adc_channel_t kMq2AdcChannel = ADC_CHANNEL_0;  // GPIO1
 constexpr adc_channel_t kMq4AdcChannel = ADC_CHANNEL_1;  // GPIO2
 
-// Debug calibration values. Change to 180000 / 60000 before final acceptance.
-constexpr uint32_t kMqWarmupMs = 30000;
-constexpr uint32_t kMqBaselineMs = 10000;
+// MQ sensors need a long heater warm-up. Baseline is captured only after the
+// ADC readings are non-zero and stable, otherwise ratio is meaningless.
+constexpr uint32_t kMqWarmupMs = 180000;
+constexpr uint32_t kMqBaselineMs = 60000;
+constexpr int kMqMinRawMq2 = 100;
+constexpr int kMqMinRawMq4 = 50;
+constexpr size_t kMqBaselineMaxSamples = 64;
+constexpr size_t kMqBaselineMinSamples = 10;
 
 i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_sht30 = nullptr;
@@ -36,14 +42,34 @@ adc_oneshot_unit_handle_t s_adc = nullptr;
 bool s_adc_ready = false;
 uint32_t s_mq_start_ms = 0;
 uint32_t s_mq_baseline_start_ms = 0;
-uint32_t s_mq_sum2 = 0;
-uint32_t s_mq_sum4 = 0;
-uint32_t s_mq_count = 0;
+uint16_t s_mq_samples2[kMqBaselineMaxSamples] = {};
+uint16_t s_mq_samples4[kMqBaselineMaxSamples] = {};
+size_t s_mq_sample_count = 0;
 float s_mq_base2 = 0.0f;
 float s_mq_base4 = 0.0f;
 bool s_mq_baseline_ready = false;
 bool s_mq_warmup_logged = false;
+bool s_mq_warmup_done_logged = false;
+bool s_mq_low_raw_logged = false;
+bool s_mq_baseline_capture_logged = false;
 bool s_mq_baseline_logged = false;
+bool s_mq_baseline_reject_logged = false;
+bool s_mq_fault_logged = false;
+
+void ResetMqBaselineCapture(void)
+{
+    s_mq_baseline_start_ms = 0;
+    s_mq_sample_count = 0;
+}
+
+uint16_t MedianUint16(uint16_t* values, size_t count)
+{
+    if (count == 0) {
+        return 0;
+    }
+    std::sort(values, values + count);
+    return values[count / 2];
+}
 
 uint8_t Sht30Crc(const uint8_t* data, size_t len)
 {
@@ -170,19 +196,23 @@ bool InitMqAdc(void)
 
     s_adc_ready = true;
     s_mq_start_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    s_mq_baseline_start_ms = 0;
-    s_mq_sum2 = 0;
-    s_mq_sum4 = 0;
-    s_mq_count = 0;
+    ResetMqBaselineCapture();
     s_mq_base2 = 0.0f;
     s_mq_base4 = 0.0f;
     s_mq_baseline_ready = false;
     s_mq_warmup_logged = false;
+    s_mq_warmup_done_logged = false;
+    s_mq_low_raw_logged = false;
+    s_mq_baseline_capture_logged = false;
     s_mq_baseline_logged = false;
+    s_mq_baseline_reject_logged = false;
+    s_mq_fault_logged = false;
 
-    ESP_LOGI(TAG, "MQ-2/MQ-4 ADC ready on ADC1 CH0/CH1 (debug warm-up %us, baseline %us)",
+    ESP_LOGI(TAG,
+             "MQ-2/MQ-4 ADC ready on ADC1 CH0/CH1 (warm-up %us, baseline %us, min raw %d/%d)",
              static_cast<unsigned>(kMqWarmupMs / 1000),
-             static_cast<unsigned>(kMqBaselineMs / 1000));
+             static_cast<unsigned>(kMqBaselineMs / 1000),
+             kMqMinRawMq2, kMqMinRawMq4);
     return true;
 }
 
@@ -320,38 +350,99 @@ esp_err_t sensor_manager_read_mq(uint16_t* adc_mq2, uint16_t* adc_mq4,
         return ESP_OK;
     }
 
-    if (!s_mq_warmup_logged) {
-        ESP_LOGI(TAG, "MQ warm-up done, baseline capture started");
-        s_mq_warmup_logged = true;
+    if (!s_mq_warmup_done_logged) {
+        ESP_LOGI(TAG, "MQ warm-up done; waiting for stable ADC before baseline");
+        s_mq_warmup_done_logged = true;
     }
 
+    const bool raw_too_low =
+        raw2 < kMqMinRawMq2 || raw4 < kMqMinRawMq4;
+
     if (!s_mq_baseline_ready) {
+        if (raw_too_low) {
+            if (!s_mq_low_raw_logged) {
+                ESP_LOGW(TAG,
+                         "MQ ADC too low for baseline: MQ2=%d MQ4=%d; waiting",
+                         raw2, raw4);
+                s_mq_low_raw_logged = true;
+            }
+            ResetMqBaselineCapture();
+            s_mq_baseline_capture_logged = false;
+            return ESP_OK;
+        }
+
+        if (s_mq_low_raw_logged) {
+            ESP_LOGI(TAG, "MQ ADC stable: MQ2=%d MQ4=%d; baseline capture reset",
+                     raw2, raw4);
+            s_mq_low_raw_logged = false;
+        }
+
         if (s_mq_baseline_start_ms == 0) {
             s_mq_baseline_start_ms = now_ms;
+            s_mq_sample_count = 0;
+            if (!s_mq_baseline_capture_logged) {
+                ESP_LOGI(TAG, "MQ baseline capture started: %u s",
+                         static_cast<unsigned>(kMqBaselineMs / 1000));
+                s_mq_baseline_capture_logged = true;
+            }
         }
 
         if ((now_ms - s_mq_baseline_start_ms) < kMqBaselineMs) {
-            s_mq_sum2 += static_cast<uint32_t>(raw2);
-            s_mq_sum4 += static_cast<uint32_t>(raw4);
-            ++s_mq_count;
+            if (s_mq_sample_count < kMqBaselineMaxSamples) {
+                s_mq_samples2[s_mq_sample_count] = static_cast<uint16_t>(raw2);
+                s_mq_samples4[s_mq_sample_count] = static_cast<uint16_t>(raw4);
+                ++s_mq_sample_count;
+            }
             return ESP_OK;
         }
 
-        if (s_mq_count == 0) {
-            s_mq_baseline_start_ms = now_ms;
+        if (s_mq_sample_count < kMqBaselineMinSamples) {
+            ResetMqBaselineCapture();
+            s_mq_baseline_capture_logged = false;
             return ESP_OK;
         }
 
-        s_mq_base2 = static_cast<float>(s_mq_sum2) / static_cast<float>(s_mq_count);
-        s_mq_base4 = static_cast<float>(s_mq_sum4) / static_cast<float>(s_mq_count);
+        const uint16_t median2 =
+            MedianUint16(s_mq_samples2, s_mq_sample_count);
+        const uint16_t median4 =
+            MedianUint16(s_mq_samples4, s_mq_sample_count);
+
+        if (median2 < kMqMinRawMq2 || median4 < kMqMinRawMq4) {
+            if (!s_mq_baseline_reject_logged) {
+                ESP_LOGW(TAG,
+                         "MQ baseline rejected: MQ2=%d MQ4=%d; retrying",
+                         static_cast<int>(median2), static_cast<int>(median4));
+                s_mq_baseline_reject_logged = true;
+            }
+            ResetMqBaselineCapture();
+            s_mq_baseline_capture_logged = false;
+            return ESP_OK;
+        }
+
+        s_mq_base2 = static_cast<float>(median2);
+        s_mq_base4 = static_cast<float>(median4);
         s_mq_baseline_ready = true;
 
         if (!s_mq_baseline_logged) {
             ESP_LOGI(TAG, "MQ baseline ready: MQ2=%d MQ4=%d (%u samples)",
                      static_cast<int>(s_mq_base2), static_cast<int>(s_mq_base4),
-                     static_cast<unsigned>(s_mq_count));
+                     static_cast<unsigned>(s_mq_sample_count));
             s_mq_baseline_logged = true;
         }
+    }
+
+    if (raw_too_low) {
+        if (!s_mq_fault_logged) {
+            ESP_LOGW(TAG, "MQ sensor fault: raw ADC too low MQ2=%d MQ4=%d",
+                     raw2, raw4);
+            s_mq_fault_logged = true;
+        }
+        return ESP_OK;
+    }
+
+    if (s_mq_fault_logged) {
+        ESP_LOGI(TAG, "MQ ADC recovered: MQ2=%d MQ4=%d", raw2, raw4);
+        s_mq_fault_logged = false;
     }
 
     if (s_mq_base2 > 0.0f && s_mq_base4 > 0.0f) {
