@@ -70,6 +70,7 @@ typedef struct {
     bool valve_open;
     uint8_t window_position_pct;
     kitchen_alarm_level_t alarm_level;
+    uint16_t alarm_flags;
     kitchen_mode_t mode;
     uint32_t safety_index;
     uint32_t uptime_ms;

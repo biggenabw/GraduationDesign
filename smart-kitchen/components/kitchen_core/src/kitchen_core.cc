@@ -13,6 +13,7 @@
 #include "actuator_manager.h"
 #include "key_manager.h"
 #include "radar_manager.h"
+#include "safety_monitor.h"
 #include "sensor_manager.h"
 
 namespace {
@@ -31,6 +32,7 @@ constexpr uint32_t kSensorTaskStack = 4096;
 constexpr uint32_t kKeyTaskStack = 3072;
 constexpr uint32_t kRadarTaskStack = 4096;
 constexpr uint32_t kRadarPeriodMs = 100;
+constexpr uint32_t kAlarmMuteMs = 30000;
 
 enum class MessageType : uint8_t {
     Command,
@@ -56,11 +58,24 @@ struct Context {
     kitchen_snapshot_t snapshot = {};
     kitchen_event_cb_t event_cb = nullptr;
     void *event_ctx = nullptr;
+    uint32_t mute_until_ms = 0;
     bool initialized = false;
     bool started = false;
 };
 
 Context s_ctx;
+
+bool OutputsDiffer(const safety_monitor::SafetyDecision& a,
+                   const safety_monitor::SafetyDecision& b)
+{
+    return a.active != b.active ||
+           a.fan_on != b.fan_on ||
+           a.valve_open != b.valve_open ||
+           a.window_position_pct != b.window_position_pct ||
+           a.buzzer_on != b.buzzer_on ||
+           a.status_led_on != b.status_led_on ||
+           a.status_led_blink_hz != b.status_led_blink_hz;
+}
 
 void emit_event(kitchen_event_type_t type, kitchen_alarm_level_t level,
                 kitchen_mode_t mode, int32_t value, const char *message)
@@ -94,12 +109,147 @@ void safety_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "safety task started");
 
+    safety_monitor::SafetyDecision last_decision = {};
+    last_decision.valve_open = true;
+    last_decision.safety_index = 100;
+    kitchen_alarm_level_t last_alarm_level = KITCHEN_ALARM_NONE;
+    bool last_valve_open = true;
+    uint16_t last_alarm_flags = 0;
+    bool last_buzzer_on = false;
+    bool last_led_on = false;
+    uint32_t last_log_ms = 0;
+    uint32_t last_apply_ms = 0;
+
     while (true) {
+        const uint32_t now_ms =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+
+        kitchen_snapshot_t snapshot = {};
+        uint32_t mute_until_ms = 0;
+        bool have_snapshot = false;
         if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
-            s_ctx.snapshot.uptime_ms =
-                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            s_ctx.snapshot.uptime_ms = now_ms;
+            snapshot = s_ctx.snapshot;
+            mute_until_ms = s_ctx.mute_until_ms;
+            have_snapshot = true;
             xSemaphoreGive(s_ctx.lock);
         }
+
+        if (!have_snapshot) {
+            vTaskDelay(pdMS_TO_TICKS(kSafetyPeriodMs));
+            continue;
+        }
+
+        safety_monitor::SafetyInput input = {};
+        input.now_ms = now_ms;
+        input.sht30_valid = snapshot.valid;
+        input.temperature_c = snapshot.temperature_c;
+        input.humidity_rh = snapshot.humidity_rh;
+        input.gas_valid = snapshot.gas_valid;
+        input.gas_ratio_mq2 = snapshot.gas_ratio_mq2;
+        input.gas_ratio_mq4 = snapshot.gas_ratio_mq4;
+        input.human_present = snapshot.human_present;
+        input.human_valid = snapshot.human_valid;
+        input.radar_online = snapshot.radar_online;
+        input.pot_valid = snapshot.pot_valid;
+        input.pot_temperature_c = snapshot.pot_temperature_c;
+        input.manual_mode = (snapshot.mode == KITCHEN_MODE_MANUAL);
+
+        safety_monitor::SafetyDecision decision = {};
+        safety_monitor::evaluate(&input, &decision);
+
+        const bool muted = now_ms < mute_until_ms;
+        bool outputs_changed = OutputsDiffer(decision, last_decision);
+        if (decision.active &&
+            (now_ms < last_apply_ms || now_ms - last_apply_ms >= 1000)) {
+            outputs_changed = true;
+            last_apply_ms = now_ms;
+        }
+        const bool drive_outputs = decision.active || last_decision.active ||
+                                   decision.alarm_level >= KITCHEN_ALARM_L3;
+
+        if (xSemaphoreTake(s_ctx.lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+            s_ctx.snapshot.alarm_level = decision.alarm_level;
+            s_ctx.snapshot.alarm_flags = decision.alarm_flags;
+            s_ctx.snapshot.safety_index = decision.safety_index;
+            s_ctx.snapshot.stove_on = decision.stove_on;
+            if (drive_outputs) {
+                s_ctx.snapshot.fan_on = decision.fan_on;
+                s_ctx.snapshot.valve_open = decision.valve_open;
+                s_ctx.snapshot.window_position_pct =
+                    decision.window_position_pct;
+            }
+            xSemaphoreGive(s_ctx.lock);
+        }
+
+        if (outputs_changed && drive_outputs) {
+            actuator_manager_set_window(decision.window_position_pct);
+            actuator_manager_set_fan(decision.fan_on);
+            actuator_manager_set_valve(decision.valve_open);
+        }
+
+        const bool desired_buzzer = decision.buzzer_on && !muted;
+        if (desired_buzzer != last_buzzer_on) {
+            actuator_manager_set_buzzer(desired_buzzer);
+            last_buzzer_on = desired_buzzer;
+        }
+
+        bool led_on = decision.status_led_on;
+        if (decision.status_led_blink_hz > 0) {
+            const uint32_t half_period_ms =
+                500U / decision.status_led_blink_hz;
+            led_on = ((now_ms / half_period_ms) % 2U) == 0;
+        }
+        if (led_on != last_led_on) {
+            actuator_manager_set_led(led_on);
+            last_led_on = led_on;
+        }
+
+        if (decision.alarm_level != last_alarm_level) {
+            emit_event(KITCHEN_EVENT_ALARM_CHANGED, decision.alarm_level,
+                       snapshot.mode,
+                       static_cast<int32_t>(decision.alarm_level),
+                       decision.alarm_level == KITCHEN_ALARM_NONE
+                           ? "alarm cleared"
+                           : "alarm changed");
+            last_alarm_level = decision.alarm_level;
+        }
+
+        if (drive_outputs && decision.valve_open != last_valve_open) {
+            emit_event(KITCHEN_EVENT_VALVE_CHANGED, decision.alarm_level,
+                       snapshot.mode, decision.valve_open ? 1 : 0,
+                       decision.valve_open ? "valve open" : "valve closed");
+            last_valve_open = decision.valve_open;
+        }
+
+        const bool fault_now = (decision.alarm_flags &
+                                safety_monitor::kAlarmFlagFault) != 0;
+        const bool fault_before = (last_alarm_flags &
+                                   safety_monitor::kAlarmFlagFault) != 0;
+        if (fault_now != fault_before) {
+            emit_event(KITCHEN_EVENT_SENSOR_FAULT, decision.alarm_level,
+                       snapshot.mode,
+                       static_cast<int32_t>(decision.alarm_flags),
+                       fault_now ? "sensor fault" : "sensor fault cleared");
+        }
+        last_alarm_flags = decision.alarm_flags;
+
+        if ((now_ms - last_log_ms) >= 5000 &&
+            (decision.active || decision.alarm_flags != 0)) {
+            ESP_LOGI(TAG,
+                     "safety level=%d flags=%u active=%d window=%u fan=%d valve=%d buzzer=%d index=%u",
+                     static_cast<int>(decision.alarm_level),
+                     static_cast<unsigned>(decision.alarm_flags),
+                     decision.active,
+                     static_cast<unsigned>(decision.window_position_pct),
+                     decision.fan_on,
+                     decision.valve_open,
+                     desired_buzzer,
+                     static_cast<unsigned>(decision.safety_index));
+            last_log_ms = now_ms;
+        }
+
+        last_decision = decision;
         vTaskDelay(pdMS_TO_TICKS(kSafetyPeriodMs));
     }
 }
@@ -111,6 +261,21 @@ void handle_command(const Message &message)
     bool valve_open = false;
 
     if (xSemaphoreTake(s_ctx.lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    const bool safety_override =
+        (s_ctx.snapshot.alarm_flags &
+         (safety_monitor::kAlarmFlagGas |
+          safety_monitor::kAlarmFlagStove |
+          safety_monitor::kAlarmFlagHumidity)) != 0;
+    const bool manual_actuator_command =
+        message.action == KITCHEN_ACTION_SET_WINDOW ||
+        message.action == KITCHEN_ACTION_SET_FAN ||
+        message.action == KITCHEN_ACTION_SET_VALVE;
+    if (safety_override && manual_actuator_command) {
+        xSemaphoreGive(s_ctx.lock);
+        ESP_LOGW(TAG, "manual actuator command blocked by active safety rule");
         return;
     }
 
@@ -127,6 +292,9 @@ void handle_command(const Message &message)
             s_ctx.snapshot.fan_on = (message.value != 0);
             break;
         case KITCHEN_ACTION_MUTE_ALARM:
+            s_ctx.mute_until_ms =
+                static_cast<uint32_t>(esp_timer_get_time() / 1000) +
+                kAlarmMuteMs;
             break;
         case KITCHEN_ACTION_CLOSE_VALVE:
             s_ctx.snapshot.valve_open = false;
@@ -135,7 +303,8 @@ void handle_command(const Message &message)
             s_ctx.snapshot.valve_open = (message.value != 0);
             break;
         case KITCHEN_ACTION_RESET_ALARM:
-            s_ctx.snapshot.alarm_level = KITCHEN_ALARM_NONE;
+            s_ctx.mute_until_ms = 0;
+            safety_monitor::request_reset();
             break;
         default:
             break;
@@ -173,8 +342,8 @@ void handle_command(const Message &message)
             break;
         case KITCHEN_ACTION_RESET_ALARM:
             actuator_manager_set_buzzer(false);
-            emit_event(KITCHEN_EVENT_ALARM_CHANGED, KITCHEN_ALARM_NONE, mode, 0,
-                       "alarm reset");
+            emit_event(KITCHEN_EVENT_ALARM_CHANGED, level, mode, 0,
+                       "alarm reset requested");
             break;
         default:
             break;
@@ -267,8 +436,8 @@ void sensor_task(void *arg)
             xSemaphoreGive(s_ctx.lock);
         }
 
-        // LED is a simple visual indicator: on when the last SHT30 read is valid.
-        actuator_manager_set_led(err == ESP_OK);
+        // Status LED is owned by safety_task: steady when SHT30 is valid,
+        // blinking on L2/L3 alarms.
 
         const uint32_t now_ms =
             static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -390,6 +559,8 @@ extern "C" esp_err_t kitchen_core_init(void)
     s_ctx.snapshot.safety_index = 100;
     s_ctx.snapshot.valid = false;
     s_ctx.initialized = true;
+
+    safety_monitor::init();
 
     if (sensor_manager_init() != ESP_OK) {
         ESP_LOGW(TAG, "SHT30 not ready; continuing without sensor");
