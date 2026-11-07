@@ -8,7 +8,9 @@ namespace {
 
 constexpr const char* TAG = "ActuatorManager";
 
-constexpr gpio_num_t kStatusLed = GPIO_NUM_17;
+constexpr gpio_num_t kLedRed = GPIO_NUM_17;
+constexpr gpio_num_t kLedYellow = GPIO_NUM_18;
+constexpr gpio_num_t kLedGreen = GPIO_NUM_21;
 constexpr gpio_num_t kWindowServo = GPIO_NUM_11;
 constexpr gpio_num_t kValveRelay = GPIO_NUM_12;
 constexpr gpio_num_t kFanIna = GPIO_NUM_13;
@@ -121,7 +123,15 @@ esp_err_t actuator_manager_init(void)
     if (err != ESP_OK) {
         return err;
     }
-    err = InitOutput(kStatusLed, 0);
+    err = InitOutput(kLedRed, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = InitOutput(kLedYellow, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = InitOutput(kLedGreen, 0);
     if (err != ESP_OK) {
         return err;
     }
@@ -131,14 +141,26 @@ esp_err_t actuator_manager_init(void)
     actuator_manager_set_valve(kValveDefaultOpen);
     actuator_manager_set_buzzer(false);
 
-    ESP_LOGI(TAG, "ready: servo=GPIO%d relay=GPIO%d fan=GPIO%d buzzer=GPIO%d led=GPIO%d",
-             kWindowServo, kValveRelay, kFanIna, kBuzzer, kStatusLed);
+    ESP_LOGI(TAG,
+             "ready: servo=GPIO%d relay=GPIO%d fan=GPIO%d buzzer=GPIO%d led=GPIO%d/%d/%d",
+             kWindowServo, kValveRelay, kFanIna, kBuzzer, kLedRed,
+             kLedYellow, kLedGreen);
     return ESP_OK;
 }
 
-void actuator_manager_set_led(bool on)
+void actuator_manager_set_leds(bool red, bool yellow, bool green)
 {
-    gpio_set_level(kStatusLed, on ? 1 : 0);
+    static int last_levels = -1;
+    const int levels = (red ? 1 : 0) | (yellow ? 2 : 0) | (green ? 4 : 0);
+    if (levels == last_levels) {
+        return;
+    }
+
+    gpio_set_level(kLedRed, red ? 1 : 0);
+    gpio_set_level(kLedYellow, yellow ? 1 : 0);
+    gpio_set_level(kLedGreen, green ? 1 : 0);
+    last_levels = levels;
+    ESP_LOGI(TAG, "leds red=%d yellow=%d green=%d", red, yellow, green);
 }
 
 void actuator_manager_set_window(uint8_t percent)

@@ -115,7 +115,6 @@ void safety_task(void *arg)
     kitchen_alarm_level_t last_alarm_level = KITCHEN_ALARM_NONE;
     bool last_valve_open = true;
     uint16_t last_alarm_flags = 0;
-    bool last_led_on = false;
     uint32_t last_log_ms = 0;
     uint32_t last_apply_ms = 0;
 
@@ -192,16 +191,22 @@ void safety_task(void *arg)
         const bool desired_buzzer = decision.buzzer_on && !muted;
         actuator_manager_set_buzzer(desired_buzzer);
 
-        bool led_on = decision.status_led_on;
-        if (decision.status_led_blink_hz > 0) {
-            const uint32_t half_period_ms =
-                500U / decision.status_led_blink_hz;
-            led_on = ((now_ms / half_period_ms) % 2U) == 0;
+        bool led_red = false;
+        bool led_yellow = false;
+        bool led_green = false;
+        if (decision.alarm_level == KITCHEN_ALARM_L3) {
+            // Red 2 Hz. Gas L3 keeps the yellow LED solid as an extra cue.
+            led_red = ((now_ms / 250U) % 2U) == 0;
+            led_yellow =
+                (decision.alarm_flags & safety_monitor::kAlarmFlagGas) != 0;
+        } else if (decision.alarm_level == KITCHEN_ALARM_L2) {
+            // Yellow 1 Hz.
+            led_yellow = ((now_ms / 500U) % 2U) == 0;
+        } else {
+            // Normal: green steady while SHT30 is valid.
+            led_green = decision.status_led_on;
         }
-        if (led_on != last_led_on) {
-            actuator_manager_set_led(led_on);
-            last_led_on = led_on;
-        }
+        actuator_manager_set_leds(led_red, led_yellow, led_green);
 
         if (decision.alarm_level != last_alarm_level) {
             emit_event(KITCHEN_EVENT_ALARM_CHANGED, decision.alarm_level,
