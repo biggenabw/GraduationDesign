@@ -61,9 +61,16 @@ static void KitchenEventLogger(const kitchen_event_t* event, void* user_ctx)
              static_cast<long>(event->value),
              event->message);
 
-    // Selftest-only key mapping: UP/DOWN move the window, OK toggles the fan,
-    // BACK toggles the demo valve based on the current snapshot.
+    // Selftest-only key mapping:
+    // - normal: UP/DOWN move window, OK toggles fan, BACK toggles valve
+    // - L2/L3 alarm: OK mutes 30 s, BACK requests reset
     if (event->type == KITCHEN_EVENT_KEY) {
+        kitchen_snapshot_t snapshot = {};
+        const bool have_snapshot =
+            (kitchen_core_get_snapshot(&snapshot) == ESP_OK);
+        const bool alarm_active =
+            have_snapshot && snapshot.alarm_level >= KITCHEN_ALARM_L2;
+
         switch (static_cast<kitchen_key_t>(event->value)) {
             case KITCHEN_KEY_UP:
                 kitchen_core_request(KITCHEN_ACTION_SET_WINDOW, 100);
@@ -71,20 +78,26 @@ static void KitchenEventLogger(const kitchen_event_t* event, void* user_ctx)
             case KITCHEN_KEY_DOWN:
                 kitchen_core_request(KITCHEN_ACTION_SET_WINDOW, 0);
                 break;
-            case KITCHEN_KEY_OK: {
-                static bool fan_on = false;
-                fan_on = !fan_on;
-                kitchen_core_request(KITCHEN_ACTION_SET_FAN, fan_on ? 1 : 0);
+            case KITCHEN_KEY_OK:
+                if (alarm_active) {
+                    ESP_LOGI(TAG, "selftest key: mute alarm 30 s");
+                    kitchen_core_request(KITCHEN_ACTION_MUTE_ALARM, 0);
+                } else {
+                    static bool fan_on = false;
+                    fan_on = !fan_on;
+                    kitchen_core_request(KITCHEN_ACTION_SET_FAN,
+                                         fan_on ? 1 : 0);
+                }
                 break;
-            }
-            case KITCHEN_KEY_BACK: {
-                kitchen_snapshot_t snapshot = {};
-                if (kitchen_core_get_snapshot(&snapshot) == ESP_OK) {
+            case KITCHEN_KEY_BACK:
+                if (alarm_active) {
+                    ESP_LOGI(TAG, "selftest key: request alarm reset");
+                    kitchen_core_request(KITCHEN_ACTION_RESET_ALARM, 0);
+                } else if (have_snapshot) {
                     kitchen_core_request(KITCHEN_ACTION_SET_VALVE,
                                          snapshot.valve_open ? 0 : 1);
                 }
                 break;
-            }
             default:
                 break;
         }
