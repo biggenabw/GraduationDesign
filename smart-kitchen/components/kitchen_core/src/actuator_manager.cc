@@ -14,6 +14,14 @@ constexpr gpio_num_t kValveRelay = GPIO_NUM_12;
 constexpr gpio_num_t kFanIna = GPIO_NUM_13;
 constexpr gpio_num_t kBuzzer = GPIO_NUM_14;
 
+#if defined(KITCHEN_BUZZER_ACTIVE_HIGH)
+constexpr int kBuzzerOnLevel = 1;
+constexpr int kBuzzerOffLevel = 0;
+#else
+constexpr int kBuzzerOnLevel = 0;
+constexpr int kBuzzerOffLevel = 1;
+#endif
+
 constexpr ledc_mode_t kLedcMode = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t kServoTimer = LEDC_TIMER_0;
 constexpr ledc_channel_t kServoChannel = LEDC_CHANNEL_0;
@@ -75,8 +83,8 @@ esp_err_t InitServo(void)
 
 esp_err_t InitBuzzer(void)
 {
-    // Active-low active buzzer module: high = silent, low = beep.
-    return InitOutput(kBuzzer, 1);
+    // Start in the silent level; polarity is selected by CMake option.
+    return InitOutput(kBuzzer, kBuzzerOffLevel);
 }
 
 } // namespace
@@ -151,7 +159,14 @@ void actuator_manager_set_valve(bool open)
 
 void actuator_manager_set_buzzer(bool on)
 {
-    // Active-low module: low = beep, high = silent.
-    gpio_set_level(kBuzzer, on ? 0 : 1);
-    ESP_LOGI(TAG, "buzzer %s", on ? "on" : "off");
+    const int level = on ? kBuzzerOnLevel : kBuzzerOffLevel;
+    static int s_last_level = -1;
+
+    // Idempotent: safety_task reasserts the silent level every cycle, but we
+    // only touch GPIO and print a log when the requested level changes.
+    if (level != s_last_level) {
+        gpio_set_level(kBuzzer, level);
+        s_last_level = level;
+        ESP_LOGI(TAG, "buzzer %s (level=%d)", on ? "on" : "off", level);
+    }
 }

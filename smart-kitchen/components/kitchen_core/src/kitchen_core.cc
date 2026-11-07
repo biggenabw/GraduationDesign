@@ -115,7 +115,6 @@ void safety_task(void *arg)
     kitchen_alarm_level_t last_alarm_level = KITCHEN_ALARM_NONE;
     bool last_valve_open = true;
     uint16_t last_alarm_flags = 0;
-    bool last_buzzer_on = false;
     bool last_led_on = false;
     uint32_t last_log_ms = 0;
     uint32_t last_apply_ms = 0;
@@ -189,10 +188,7 @@ void safety_task(void *arg)
         }
 
         const bool desired_buzzer = decision.buzzer_on && !muted;
-        if (desired_buzzer != last_buzzer_on) {
-            actuator_manager_set_buzzer(desired_buzzer);
-            last_buzzer_on = desired_buzzer;
-        }
+        actuator_manager_set_buzzer(desired_buzzer);
 
         bool led_on = decision.status_led_on;
         if (decision.status_led_blink_hz > 0) {

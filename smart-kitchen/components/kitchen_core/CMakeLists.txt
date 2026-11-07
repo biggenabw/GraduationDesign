@@ -1,3 +1,6 @@
+option(KITCHEN_BUZZER_ACTIVE_HIGH
+       "Buzzer sounds on GPIO14 high; turn OFF for active-low modules" ON)
+
 idf_component_register(
     SRCS
         "src/kitchen_core.cc"
@@ -15,3 +18,7 @@ idf_component_register(
         esp_timer
         log
 )
+
+if(KITCHEN_BUZZER_ACTIVE_HIGH)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE KITCHEN_BUZZER_ACTIVE_HIGH=1)
+endif()
