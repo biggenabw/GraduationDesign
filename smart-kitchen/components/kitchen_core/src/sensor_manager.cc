@@ -247,6 +247,16 @@ bool InitMlx(void)
         return false;
     }
 
+    // add_device only registers the handle; probe confirms the device ACKs.
+    err = i2c_master_probe(s_bus, kMlxAddress, 100);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "MLX90614 not responding at 0x%02X: %s", kMlxAddress,
+                 esp_err_to_name(err));
+        i2c_master_bus_rm_device(s_mlx);
+        s_mlx = nullptr;
+        return false;
+    }
+
     ESP_LOGI(TAG, "MLX90614 ready on I2C1 (addr=0x%02X)", kMlxAddress);
     return true;
 }
@@ -379,16 +389,11 @@ esp_err_t sensor_manager_read_mlx(float* object_c)
     }
 
     // RAM register 0x07: object temperature, 16-bit little-endian, 0.02 K/LSB.
+    // MLX90614 is SMBus-like; use one write+repeated-start+read transaction.
     const uint8_t register_address = 0x07;
-    esp_err_t err = i2c_master_transmit(s_mlx, &register_address, 1, 100);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(2));
-
     uint8_t data[3] = {};
-    err = i2c_master_receive(s_mlx, data, sizeof(data), 100);
+    esp_err_t err = i2c_master_transmit_receive(
+        s_mlx, &register_address, 1, data, sizeof(data), 100);
     if (err != ESP_OK) {
         return err;
     }
